@@ -64,7 +64,7 @@ circles = cv2.HoughCircles(
     maxRadius=30,
 )
 
-circles_test = image.copy()
+circles_test = cv2.cvtColor(thresh_mean, cv2.COLOR_GRAY2BGR)
 
 if circles is not None:
     circles = np.uint16(np.around(circles))
