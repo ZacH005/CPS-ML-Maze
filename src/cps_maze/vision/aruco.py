@@ -3,6 +3,14 @@ from dataclasses import dataclass
 import numpy as np
 from packaging import version
 
+from cps_maze.calibration.charuco import (
+    CHARUCO_MARKER_LENGTH_MM,
+    CHARUCO_SQUARE_LENGTH_MM,
+    CHARUCO_SQUARES_X,
+    CHARUCO_SQUARES_Y,
+    CharucoBoardGeometry,
+)
+
 @dataclass(frozen=True)
 class ArucoDetection:
     found : bool
@@ -72,11 +80,17 @@ class ArucoDetector:
 class CharucoDetector:
     def __init__(
         self,
-        squares_x=5,
-        squares_y=5,
-        square_length=0.12,
-        marker_length=0.09,
+        squares_x: int = CHARUCO_SQUARES_X,
+        squares_y: int = CHARUCO_SQUARES_Y,
+        square_length_mm: float = CHARUCO_SQUARE_LENGTH_MM,
+        marker_length_mm: float = CHARUCO_MARKER_LENGTH_MM,
     ):
+        self.geometry = CharucoBoardGeometry(
+            squares_x=squares_x,
+            squares_y=squares_y,
+            square_length_mm=square_length_mm,
+            marker_length_mm=marker_length_mm,
+        )
         self.charuco_dict = cv2.aruco.getPredefinedDictionary(
             cv2.aruco.DICT_6X6_100
         )
@@ -88,9 +102,9 @@ class CharucoDetector:
         self.charuco_params = cv2.aruco.CharucoParameters()
 
         self.board = cv2.aruco.CharucoBoard(
-            (squares_x, squares_y),
-            square_length,
-            marker_length,
+            (self.geometry.squares_x, self.geometry.squares_y),
+            self.geometry.square_length_mm,
+            self.geometry.marker_length_mm,
             self.charuco_dict,
         )
 

@@ -99,6 +99,14 @@ python scripts/create_homography_from_csv.py \
   --output calibration/board_homography.npz
 ```
 
+Or calibrate directly from the CharUco board in the camera view:
+
+```bash
+python scripts/calibrate_charuco_homography.py \
+  --config configs/default.yaml \
+  --output calibration/board_homography.npz
+```
+
 ## Current Project Status
 
 The project is at scaffold stage. Before autonomous runs, the team must:
