@@ -134,19 +134,19 @@ class CharucoDetector:
     @staticmethod
     def draw_detection(image_bgr: np.ndarray, detection: CharucoDetection) -> np.ndarray:
         output = image_bgr.copy()
-        # if detection.marker_ids is not None:
-        #     cv2.aruco.drawDetectedMarkers(
-        #         output,
-        #         detection.marker_corners,
-        #         detection.marker_ids,
-        #     )
+        if detection.marker_ids is not None:
+            cv2.aruco.drawDetectedMarkers(
+                output,
+                detection.marker_corners,
+                detection.marker_ids,
+            )
 
-        # if detection.charuco_ids is not None:
-        #     cv2.aruco.drawDetectedCornersCharuco(
-        #         output,
-        #         detection.charuco_corners,
-        #         detection.charuco_ids,
-        #         (0, 0, 255),
-        #     )
+        if detection.charuco_ids is not None:
+            cv2.aruco.drawDetectedCornersCharuco(
+                output,
+                detection.charuco_corners,
+                detection.charuco_ids,
+                (0, 0, 255),
+            )
 
         return output
