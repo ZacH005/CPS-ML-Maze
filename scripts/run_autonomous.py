@@ -37,6 +37,7 @@ from cps_maze.control.pid import (
 from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.logging.run_logger import CsvRunLogger
 from cps_maze.planning.path import WaypointPath
+from cps_maze.planning.walls import WallMap
 from cps_maze.vision.ball_pipeline import make_tracker
 from cps_maze.vision.state_estimator import LowPassVelocityEstimator
 
@@ -88,6 +89,9 @@ def main() -> None:
     parser.add_argument("--path", default=None, help="Path CSV override")
     parser.add_argument("--holes", default="configs/maze_holes.csv")
     parser.add_argument("--axis-map", default="calibration/axis_map.npz")
+    parser.add_argument("--wall-mask", default="calibration/wall_mask.npz",
+                        help="Wall mask from build_wall_mask.py; enables "
+                             "cross-wall association rejection and wall slowdown")
     parser.add_argument("--port", default=None, help="Serial port override, e.g. COM10")
     parser.add_argument("--log", default="data/raw/autonomous_run.csv")
     parser.add_argument("--max-seconds", type=float, default=0.0)
@@ -128,6 +132,16 @@ def main() -> None:
         axis_map = AxisMap.identity()
         print("WARNING: no axis map found - using identity. Run scripts/axis_check.py "
               "first, or the controller may push the ball the wrong way.")
+
+    wall_map = None
+    wall_mask_file = Path(args.wall_mask)
+    if wall_mask_file.exists():
+        wall_map = WallMap.load(wall_mask_file)
+        print(f"wall mask loaded from {wall_mask_file} "
+              "(cross-wall rejection + wall slowdown active)")
+    else:
+        print("note: no wall mask - run scripts/build_wall_mask.py to enable "
+              "cross-wall association rejection and wall-proximity slowdown")
 
     kp = args.kp if args.kp is not None else float(config.control["kp"])
     kd = args.kd if args.kd is not None else float(config.control["kd"])
@@ -264,14 +278,29 @@ def main() -> None:
                     state = estimator.update(board_xy, frame.timestamp_s)
                     # Windowed projection: the ball cannot jump along the path
                     # between frames, so never associate it with a corridor far
-                    # away in path order (even if physically adjacent behind a
-                    # wall). Fall back to global search only when the windowed
-                    # match is implausibly far off-path (ball moved by hand).
-                    progress, cross = path.nearest_progress_and_distance_mm(
-                        board_xy, progress_est
-                    )
-                    if progress_est is not None and cross > 35.0:
-                        progress, cross = path.nearest_progress_and_distance_mm(board_xy)
+                    # away in path order. With a wall mask, additionally reject
+                    # candidates whose line of sight from the ball crosses a
+                    # wall (adjacent chicane corridors sit inside the window).
+                    if wall_map is not None:
+                        cands = path.candidate_projections(board_xy, progress_est)
+                        clear = [c for c in cands
+                                 if not wall_map.line_blocked(board_xy, c[2])]
+                        if not clear:  # wedged against a wall: nearest anyway
+                            clear = cands
+                        progress, cross, _ = clear[0]
+                        if progress_est is not None and cross > 35.0:
+                            cands = path.candidate_projections(board_xy, None)
+                            clear = [c for c in cands
+                                     if not wall_map.line_blocked(board_xy, c[2])]
+                            if clear:
+                                progress, cross, _ = clear[0]
+                    else:
+                        progress, cross = path.nearest_progress_and_distance_mm(
+                            board_xy, progress_est
+                        )
+                        if progress_est is not None and cross > 35.0:
+                            progress, cross = path.nearest_progress_and_distance_mm(
+                                board_xy)
                     progress_est = progress
 
                     dt_s = (frame.timestamp_s - prev_timestamp_s
@@ -282,9 +311,12 @@ def main() -> None:
                         path_point = path.point_at_progress_mm(progress)
                         tangent = path.tangent_at_progress_mm(progress)
                         turn_deg = path.heading_change_deg(progress)
+                        wall_scale = (wall_map.speed_scale(board_xy)
+                                      if wall_map is not None else 1.0)
                         board_cmd, v_des = velocity_follower.command(
                             state.position_mm, state.velocity_mm_s,
                             path_point, tangent, turn_deg, dt_s,
+                            extra_speed_scale=wall_scale,
                         )
                         # overlay: aim marker a half-second of travel ahead
                         target = state.position_mm + 0.5 * v_des

@@ -56,13 +56,17 @@ class VelocityPathFollower:
         tangent: np.ndarray,
         heading_change_deg: float,
         dt_s: float = 0.0,
+        extra_speed_scale: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Returns (board tilt command, desired velocity) for logging/overlay."""
+        """Returns (board tilt command, desired velocity) for logging/overlay.
+
+        extra_speed_scale lets the caller impose additional slowdowns
+        (e.g. wall proximity); the tighter of the two constraints wins."""
         cfg = self.config
 
         # slow down in proportion to how sharply the path turns ahead
-        speed_scale = max(cfg.min_speed_frac,
-                          1.0 - heading_change_deg / cfg.corner_slow_deg)
+        corner_scale = 1.0 - heading_change_deg / cfg.corner_slow_deg
+        speed_scale = max(cfg.min_speed_frac, min(corner_scale, extra_speed_scale))
         v_forward = cfg.v_max_mm_s * speed_scale * tangent
 
         # corrective lateral velocity toward the path centerline, capped

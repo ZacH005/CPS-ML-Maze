@@ -112,11 +112,52 @@ class WaypointPath:
                 return np.array([1.0, 0.0])
         return d / n
 
-    def heading_change_deg(self, progress_mm: float, span_mm: float = 30.0) -> float:
-        """How sharply the path turns over the next span_mm (0 = straight).
+    def heading_change_deg(self, progress_mm: float, span_mm: float = 30.0,
+                           step_mm: float = 5.0) -> float:
+        """Total turning over the next span_mm (0 = straight).
 
-        Used to slow the ball down before corners."""
-        t0 = self.tangent_at_progress_mm(progress_mm)
-        t1 = self.tangent_at_progress_mm(progress_mm + span_mm)
-        cos_angle = float(np.clip(np.dot(t0, t1), -1.0, 1.0))
-        return float(np.degrees(np.arccos(cos_angle)))
+        Accumulates |heading change| between sub-samples rather than
+        comparing endpoint tangents: in a chicane the two opposite turns
+        cancel at the endpoints, which would report "straight" and let the
+        ball barrel through at full speed. Used to slow down before corners
+        AND chicanes."""
+        total = 0.0
+        prev = self.tangent_at_progress_mm(progress_mm)
+        steps = max(int(span_mm / step_mm), 1)
+        for i in range(1, steps + 1):
+            cur = self.tangent_at_progress_mm(progress_mm + i * step_mm)
+            cos_angle = float(np.clip(np.dot(prev, cur), -1.0, 1.0))
+            total += float(np.degrees(np.arccos(cos_angle)))
+            prev = cur
+        return total
+
+    def candidate_projections(
+        self,
+        position_mm: np.ndarray,
+        near_progress_mm: float | None = None,
+        window_mm: float = 60.0,
+    ) -> list[tuple[float, float, np.ndarray]]:
+        """All per-segment projections of position onto the path, nearest
+        first: (progress_mm, distance_mm, point_mm). Lets the caller reject
+        candidates that sit across a wall (line-of-sight check) and take the
+        nearest remaining one."""
+        cumulative = self.cumulative_lengths
+        out: list[tuple[float, float, np.ndarray]] = []
+        for index, (start, end) in enumerate(zip(self.points_mm[:-1], self.points_mm[1:])):
+            if near_progress_mm is not None:
+                seg_start = float(cumulative[index])
+                seg_end = float(cumulative[index + 1])
+                if (seg_end < near_progress_mm - window_mm
+                        or seg_start > near_progress_mm + window_mm):
+                    continue
+            segment = end - start
+            length_sq = float(np.dot(segment, segment))
+            if length_sq == 0.0:
+                continue
+            t = float(np.clip(np.dot(position_mm - start, segment) / length_sq, 0.0, 1.0))
+            projection = start + t * segment
+            distance = float(np.linalg.norm(position_mm - projection))
+            progress = float(cumulative[index] + t * np.sqrt(length_sq))
+            out.append((progress, distance, projection))
+        out.sort(key=lambda c: c[1])
+        return out
