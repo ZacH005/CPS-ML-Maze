@@ -47,6 +47,7 @@ prediction ("predicted" in the output) rather than left blank.
 import argparse
 import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -223,8 +224,37 @@ def compute_static_confusers(video_path, n_samples=200, thresh=225, freq_thresh=
     return out
 
 
-def save_calibration(confusers, roi, path):
-    Path(path).write_text(json.dumps({"confusers": confusers, "roi": roi}))
+def parse_roi_arg(value):
+    return [[float(v) for v in pair.split(",")] for pair in value.split(";")]
+
+
+def load_roi_file(path):
+    data = json.loads(Path(path).read_text())
+    if isinstance(data, list):
+        return data
+    if "roi" not in data:
+        raise ValueError(f"{path} does not contain an roi field")
+    return data["roi"]
+
+
+def video_metadata(video_path):
+    cap = cv2.VideoCapture(str(video_path))
+    metadata = {
+        "source_video": str(video_path),
+        "frame_width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+        "frame_height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        "fps": cap.get(cv2.CAP_PROP_FPS),
+        "frame_count": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
+    }
+    cap.release()
+    return metadata
+
+
+def save_calibration(confusers, roi, path, metadata=None):
+    payload = {"confusers": confusers, "roi": roi}
+    if metadata:
+        payload["metadata"] = metadata
+    Path(path).write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def load_calibration(path):
@@ -366,6 +396,8 @@ def main():
     ap.add_argument("--roi", default=None,
                      help="playable-board polygon as 'x1,y1;x2,y2;...' (only used with --calibrate); "
                           "candidates outside it are never the ball, regardless of brightness/motion")
+    ap.add_argument("--roi-file", default=None,
+                     help="JSON file containing an roi field; alternative to --roi for --calibrate")
     ap.add_argument("--use-aruco", action="store_true",
                      help="rectify each frame to a top-down view via 4 ArUco corner markers "
                           "(DICT_4X4_50, ids 0-3) before doing anything else -- needs real "
@@ -380,12 +412,24 @@ def main():
         rectifier = BoardRectifier(canonical_size=(cw, ch))
 
     if args.calibrate:
+        if args.roi and args.roi_file:
+            raise SystemExit("pass either --roi or --roi-file, not both")
         print(f"scanning {args.calibrate} for static confusers (bright pegs/holes)...")
         confusers = compute_static_confusers(args.calibrate)
         roi = None
-        if args.roi:
-            roi = [[float(v) for v in pair.split(",")] for pair in args.roi.split(";")]
-        save_calibration(confusers, roi, args.confusers_file)
+        roi_source = None
+        if args.roi_file:
+            roi = load_roi_file(args.roi_file)
+            roi_source = str(args.roi_file)
+        elif args.roi:
+            roi = parse_roi_arg(args.roi)
+            roi_source = "--roi"
+        metadata = {
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "roi_source": roi_source,
+            **video_metadata(args.calibrate),
+        }
+        save_calibration(confusers, roi, args.confusers_file, metadata=metadata)
         print(f"found {len(confusers)} confuser(s)" + (f", roi with {len(roi)} points" if roi else ", no roi given")
               + f", saved to {args.confusers_file}")
         return

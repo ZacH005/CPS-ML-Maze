@@ -16,6 +16,47 @@ from cps_maze.vision.aruco import ArucoDetector
 from cps_maze.vision.ball_tracker import BrightBlobBallTracker
 
 
+def _format_bool(value: bool) -> str:
+    return str(value).lower()
+
+
+def print_stage0_convention(camera_config: dict[str, Any]) -> None:
+    print("Stage 0 fixed-camera convention:")
+    print("  reference_image: calibration/CURRENT_FIXED_CAMERA_VIEW.png")
+    print("  image_frame: OpenCV pixels, origin top-left, x right, y down")
+    print("  accepted_orientation: Start near top-right; Finish near bottom-left")
+    print(
+        "  invalidates_later_data: changing device index, resolution, FPS, flips, "
+        "crop, or camera pose"
+    )
+    print("Requested camera settings:")
+    print(f"  device_index={camera_config['device_index']}")
+    print(f"  width={camera_config['width']}")
+    print(f"  height={camera_config['height']}")
+    print(f"  fps={camera_config['fps']}")
+    print(f"  flip_horizontal={_format_bool(bool(camera_config.get('flip_horizontal', False)))}")
+    print(f"  flip_vertical={_format_bool(bool(camera_config.get('flip_vertical', False)))}")
+
+
+def print_camera_runtime(camera: CameraCapture) -> None:
+    requested = camera.requested_settings()
+    observed = camera.observed_settings()
+    print("Camera runtime settings:")
+    print(
+        "  requested: "
+        f"device_index={requested['device_index']} "
+        f"{requested['width']}x{requested['height']}@{requested['fps']}fps "
+        f"fourcc={requested['fourcc']} backend={requested['backend']} "
+        f"flip_horizontal={_format_bool(requested['flip_horizontal'])} "
+        f"flip_vertical={_format_bool(requested['flip_vertical'])}"
+    )
+    print(
+        "  observed: "
+        f"{observed['width']}x{observed['height']}@{observed['fps']:.1f}fps "
+        f"fourcc={observed['fourcc']} backend={observed['backend']}"
+    )
+
+
 def save_current_config(config_path: Path, config_data: dict[str, Any], params: dict[str, Any]) -> None:
     config_data.setdefault("vision", {})
     for key in (
@@ -43,6 +84,7 @@ def main() -> None:
 
     config_path = Path(args.config)
     config = load_config(config_path)
+    print_stage0_convention(config.camera)
     tracker = BrightBlobBallTracker(config.vision)
     aruco_detector = ArucoDetector()
 
@@ -79,6 +121,7 @@ def main() -> None:
     cv2.createTrackbar("every_n", "Controls", int(live_params["debug_overlay_every_n"]), 10, lambda _value: None)
 
     with CameraCapture(config.camera) as camera:
+        print_camera_runtime(camera)
         while True:
             live_params["min_blob_area_px"] = cv2.getTrackbarPos("min_area", "Controls")
             live_params["max_blob_area_px"] = cv2.getTrackbarPos("max_area", "Controls")
@@ -161,4 +204,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

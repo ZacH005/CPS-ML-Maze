@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from time import monotonic
+from typing import Any
 
 import cv2
 import numpy as np
@@ -17,6 +18,14 @@ _BACKENDS = {
 }
 
 
+def _decode_fourcc(value: float) -> str:
+    code = int(value)
+    chars = "".join(chr((code >> (8 * i)) & 0xFF) for i in range(4))
+    if all(32 <= ord(char) <= 126 for char in chars):
+        return chars
+    return str(code)
+
+
 @dataclass(frozen=True)
 class Frame:
     image: np.ndarray
@@ -27,6 +36,29 @@ class CameraCapture:
     def __init__(self, config: dict):
         self.config = config
         self.cap: cv2.VideoCapture | None = None
+
+    def requested_settings(self) -> dict[str, Any]:
+        return {
+            "device_index": int(self.config["device_index"]),
+            "backend": str(self.config.get("backend", "auto")).lower(),
+            "fourcc": str(self.config.get("fourcc", "MJPG")),
+            "width": int(self.config["width"]),
+            "height": int(self.config["height"]),
+            "fps": int(self.config["fps"]),
+            "flip_horizontal": bool(self.config.get("flip_horizontal", False)),
+            "flip_vertical": bool(self.config.get("flip_vertical", False)),
+        }
+
+    def observed_settings(self) -> dict[str, Any]:
+        if self.cap is None:
+            raise RuntimeError("Camera is not open")
+        return {
+            "backend": int(self.cap.get(cv2.CAP_PROP_BACKEND)),
+            "fourcc": _decode_fourcc(self.cap.get(cv2.CAP_PROP_FOURCC)),
+            "width": int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            "height": int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+            "fps": self.cap.get(cv2.CAP_PROP_FPS),
+        }
 
     def open(self) -> None:
         device_index = int(self.config["device_index"])
@@ -76,4 +108,3 @@ class CameraCapture:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
-

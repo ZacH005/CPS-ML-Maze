@@ -22,8 +22,8 @@ Use the CharUco board as a startup calibration target to rectify the camera view
 
 The maze measurements supplied for the control frame are:
 
-- Maze width: 3220 mm
-- Maze height: 2820 mm
+- Maze width: 322.0 mm
+- Maze height: 282.0 mm
 - External border wall width: 10 mm
 - Internal visible outer width: 3010 mm
 - Internal visible outer height: 2620 mm

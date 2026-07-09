@@ -1,4 +1,12 @@
 camera:
+  # Stage 0 fixed-camera runtime convention:
+  # - Reference image: calibration/CURRENT_FIXED_CAMERA_VIEW.png
+  # - Image frame: OpenCV pixels, origin top-left, x right, y down.
+  # - Accepted orientation: Start near top-right, Finish near bottom-left.
+  # Changing device, mode, flips, crop, or camera pose invalidates later
+  # waypoints, recordings, and calibration files.
+  convention: "opencv_px_top_left_start_top_right_finish_bottom_left"
+  reference_image: "calibration/CURRENT_FIXED_CAMERA_VIEW.png"
   device_index: 0  # per-machine: 1 on the Windows lab PC
   width: 1280
   height: 800
@@ -7,7 +15,7 @@ camera:
   flip_vertical: false
 
 serial:
-  port: "/dev/cu.usbmodem101"
+  port: "/dev/cu.usbmodem1101"
   baudrate: 500000
   timeout_s: 0.2
 
@@ -45,7 +53,8 @@ control:
 maze:
   # Play-area size. VERIFY WITH A RULER: merged value was 3220x2820,
   # assumed to mean 322.0x282.0 mm.
-  width_mm: 322.0
-  height_mm: 282.0
+  # Maze dimensions: 322.0x282.0 mm
+  # actual play area size is 263mm x 222mm
+  width_mm: 263.0
+  height_mm: 222.0
   path_file: "configs/example_path.csv"
-

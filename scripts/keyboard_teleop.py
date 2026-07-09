@@ -39,10 +39,10 @@ _KEY_MAP: dict = {}  # built after parse so we can also check char
 
 # Direction token → (yaw_sign, pitch_sign)
 _DIR: dict[str, tuple[int, int]] = {
-    "fwd":   (-1,  0),   # W  → yaw negative
-    "back":  (+1,  0),   # S  → yaw positive
-    "left":  ( 0, +1),   # A  → pitch positive
-    "right": ( 0, -1),   # D  → pitch negative
+    "fwd":   (+1,  0),   # W  → yaw negative
+    "back":  (-1,  0),   # S  → yaw positive
+    "left":  ( 0, -1),   # A  → pitch positive
+    "right": ( 0, +1),   # D  → pitch negative
 }
 
 # On first frame of a key press, velocity is set to max_vel directly —
