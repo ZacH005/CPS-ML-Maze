@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import signal
 import tkinter as tk
 from pathlib import Path
 
@@ -30,6 +31,19 @@ def launch(script: str, proc_holder: list) -> None:
 
 def build_ui() -> None:
     proc_holder: list = []
+
+    def stop_running_session() -> None:
+        if proc_holder and proc_holder[0].poll() is None:
+            proc_holder[0].terminate()
+            try:
+                proc_holder[0].wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                proc_holder[0].kill()
+        proc_holder.clear()
+
+    def handle_signal(_signum, _frame) -> None:
+        stop_running_session()
+        root.destroy()
 
     root = tk.Tk()
     root.title("Maze Controller")
@@ -69,10 +83,11 @@ def build_ui() -> None:
              font=("Helvetica", 9), bg=BG, fg=FG_DIM).pack(pady=(18, 0))
 
     def on_close():
-        if proc_holder and proc_holder[0].poll() is None:
-            proc_holder[0].terminate()
+        stop_running_session()
         root.destroy()
 
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 

@@ -57,6 +57,18 @@ Primary path:
 - Conservative path follower first.
 - Speed tiers only after repeatability.
 
+Single-entry recalibration:
+
+```bash
+python3 scripts/recalibrate_all.py
+```
+
+This runs the fixed-camera calibration sequence in order and opens
+`scripts/launcher.py` during the recording step so the board can be manually
+controlled while tracker/confuser footage is captured. Use `--video
+data/raw/<recording>.avi` to reuse an existing recording instead of making a
+new one.
+
 Fallback path:
 
 - If homography or full path becomes unreliable close to deadline, demonstrate a reliable short section with the same perception, control, safety, and logging stack.
