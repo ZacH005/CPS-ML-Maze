@@ -161,8 +161,8 @@ control:
   # handles it), and braking it creates a brake/kick limit cycle that acts
   # like an invisible wall. Fire only when the ball is off the centerline
   # or moving misaligned with the path direction:
-  hole_emergency_offroute_mm: 12.0
-  hole_emergency_align_deg: 40.0
+  hole_emergency_offroute_mm: 15.0
+  hole_emergency_align_deg: 50.0
 
 maze:
   # Play-area size. VERIFY WITH A RULER: merged value was 3220x2820,
