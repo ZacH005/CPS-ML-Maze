@@ -38,6 +38,7 @@ from cps_maze.control.pid import (
 )
 from cps_maze.hardware.serial_link import ArduinoServoLink, ServoCommand
 from cps_maze.logging.run_logger import CsvRunLogger
+from cps_maze.planning.hazards import HoleMap
 from cps_maze.planning.path import WaypointPath
 from cps_maze.planning.walls import WallMap
 from cps_maze.vision.ball_pipeline import make_tracker
@@ -208,6 +209,19 @@ def main() -> None:
     stall_kick_ramp_per_s = float(config.control.get("stall_kick_ramp_per_s", 0.15))
     corner_noise_deg = float(config.control.get("corner_noise_deg", 6.0))
     corner_span_mm = float(config.control.get("corner_span_mm", 30.0))
+
+    # Hole awareness: anticipatory speed cap from braking physics, plus a
+    # last-resort emergency brake when the trajectory enters a hole and the
+    # stopping distance exceeds the distance to it.
+    hole_map = HoleMap(
+        holes,
+        ball_radius_mm=float(config.control.get("ball_radius_mm", 6.0)),
+        margin_mm=float(config.control.get("hole_margin_mm", 4.0)),
+    )
+    hole_horizon_mm = float(config.control.get("hole_horizon_mm", 80.0))
+    hole_standoff_mm = float(config.control.get("hole_standoff_mm", 10.0))
+    hole_brake_accel = float(config.control.get("hole_brake_accel_mm_s2", 250.0))
+    hole_emergency = bool(config.control.get("hole_emergency_brake", True))
     follower = PathFollower(PathFollowerConfig(
         kp=kp, kd=kd, ki=ki, max_command=max_command,
         stall_kick=stall_kick,
@@ -254,7 +268,7 @@ def main() -> None:
         "timestamp_s", "found", "x_mm", "y_mm", "vx_mm_s", "vy_mm_s",
         "target_x_mm", "target_y_mm", "progress_mm",
         "carrot_x_mm", "carrot_y_mm", "desired_vx_mm_s", "desired_vy_mm_s",
-        "cross_track_mm", "turn_deg", "wall_speed_scale",
+        "cross_track_mm", "turn_deg", "wall_speed_scale", "hole_brake",
         "board_cmd_x", "board_cmd_y", "yaw_command", "pitch_command",
     ]
 
@@ -382,6 +396,19 @@ def main() -> None:
                             if prev_timestamp_s is not None else 0.0)
                     prev_timestamp_s = frame.timestamp_s
 
+                    # hole-aware speed cap: braking starts early enough by
+                    # construction (v_allowed = sqrt(2 a d) toward the pass)
+                    hole_brake = ""
+                    hazard_d = hole_map.path_hazard_distance_mm(
+                        path, progress, horizon_mm=hole_horizon_mm)
+                    speed_cap = hole_map.speed_cap_mm_s(
+                        hazard_d, hole_brake_accel, standoff_mm=hole_standoff_mm)
+                    hole_scale = 1.0
+                    if speed_cap is not None:
+                        hole_scale = min(1.0, speed_cap / max(v_max, 1e-6))
+                        if hole_scale < 0.999:
+                            hole_brake = "slow"
+
                     if mode == "velocity":
                         path_point = path.point_at_progress_mm(progress)
                         tangent = path.tangent_at_progress_mm(progress)
@@ -393,7 +420,7 @@ def main() -> None:
                         board_cmd, v_des = velocity_follower.command(
                             state.position_mm, state.velocity_mm_s,
                             path_point, tangent, turn_deg, dt_s,
-                            extra_speed_scale=wall_scale,
+                            extra_speed_scale=min(wall_scale, hole_scale),
                         )
                         # overlay: aim marker a half-second of travel ahead
                         target = state.position_mm + 0.5 * v_des
@@ -413,7 +440,7 @@ def main() -> None:
                         board_cmd, v_des = carrot_follower.command(
                             state.position_mm, state.velocity_mm_s,
                             target, turn_deg, dt_s,
-                            extra_speed_scale=wall_scale,
+                            extra_speed_scale=min(wall_scale, hole_scale),
                         )
                         carrot_x = target[0]
                         carrot_y = target[1]
@@ -427,20 +454,32 @@ def main() -> None:
                         board_cmd = follower.command(state.position_mm,
                                                      state.velocity_mm_s,
                                                      target, dt_s)
+                    # Reactive layer: the trajectory enters a hole and the
+                    # stopping distance exceeds the distance to it - normal
+                    # control can no longer prevent the fall. Full brake
+                    # opposite to the velocity, bypassing the slew limiter
+                    # (an emergency cannot wait for a ramp).
+                    emergency = False
+                    speed_now = float(np.linalg.norm(state.velocity_mm_s))
+                    if (hole_emergency and speed_now > 15.0
+                            and hole_map.must_emergency_brake(
+                                state.position_mm, state.velocity_mm_s,
+                                hole_brake_accel)):
+                        emergency = True
+                        hole_brake = "emergency"
+                        board_cmd = (-max_command / speed_now) * state.velocity_mm_s
+
                     servo_cmd = np.clip(axis_map.apply(board_cmd), -max_command, max_command)
-                    if command_slew_per_s > 0.0 and dt_s > 0.0:
+                    if command_slew_per_s > 0.0 and dt_s > 0.0 and not emergency:
                         max_step = command_slew_per_s * dt_s
                         servo_cmd = prev_servo_cmd + np.clip(
                             servo_cmd - prev_servo_cmd, -max_step, max_step)
                     prev_servo_cmd = servo_cmd.copy()
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
-
-                    near = holes[
-                        np.hypot(holes[:, 0] - board_xy[0], holes[:, 1] - board_xy[1])
-                        < holes[:, 2] + 10.0
-                    ] if len(holes) else []
-                    if len(near):
-                        status += "  NEAR HOLE"
+                    if hole_brake == "emergency":
+                        status += "  EMERGENCY BRAKE"
+                    elif hole_brake == "slow":
+                        status += "  hole ahead"
 
                     if link is not None:
                         link.send(ServoCommand(yaw=float(servo_cmd[0]),
@@ -455,6 +494,7 @@ def main() -> None:
                         "desired_vx_mm_s": v_des[0], "desired_vy_mm_s": v_des[1],
                         "cross_track_mm": cross, "turn_deg": turn_deg,
                         "wall_speed_scale": wall_scale,
+                        "hole_brake": hole_brake,
                         "board_cmd_x": board_cmd[0], "board_cmd_y": board_cmd[1],
                         "yaw_command": servo_cmd[0], "pitch_command": servo_cmd[1],
                     })

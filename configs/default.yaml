@@ -128,6 +128,21 @@ control:
   # jumps (stiction kicks, re-association) so corners aren't punched through.
   command_slew_per_s: 3.0
   max_command: 0.45
+  # --- Hole awareness ---
+  # Anticipatory: scan the route this far ahead for passes near holes and
+  # cap speed by braking physics (v = sqrt(2 a d)), so deceleration starts
+  # early instead of when the hole is already close.
+  hole_horizon_mm: 80.0
+  hole_standoff_mm: 10.0        # be at crawl speed this far before the pass
+  hole_margin_mm: 4.0           # extra capture clearance around each hole
+  ball_radius_mm: 6.0
+  # Achievable deceleration from board tilt; measure/tune on the rig. Too
+  # high = brakes too late; too low = crawls far from every hole.
+  hole_brake_accel_mm_s2: 250.0
+  # Reactive: full brake opposite the velocity (bypassing the slew limiter)
+  # when the trajectory enters a hole and stopping distance exceeds the
+  # distance to it.
+  hole_emergency_brake: true
 
 maze:
   # Play-area size. VERIFY WITH A RULER: merged value was 3220x2820,
