@@ -157,20 +157,33 @@ control:
   # near holes are small and steady - control, not violent avoidance.
   plan_latency_s: 0.35
   slowzone_max_command: 0.55
+  # --- Velocity-estimate guards (feed speed to control + stabilize) ---
+  # The MSMF camera path delivers occasional burst frames ~0 ms apart; dividing
+  # sub-mm detection jitter by ~0 s manufactured 300-490 mm/s phantom speeds
+  # that constantly tripped the stabilize state. Ignore the velocity from
+  # frames closer than this in time (treat as duplicates):
+  velocity_min_dt_s: 0.006
+  # And clamp any single measured velocity above this before it enters the
+  # smoothing filter (a real ball never approaches this on a 263 mm board; a
+  # value this high is a tracker mislock, not motion):
+  velocity_max_speed_mm_s: 250.0
   # --- Composure / stabilize state ---
   # Breaks the freak-out cascade seen at hole 1: near-miss -> rough brake
   # -> ball too fast -> unstable -> follower pushed forward anyway -> fell.
-  # When the emergency brake fires or speed exceeds
-  # max(2x planned, planned + overspeed margin), the runner stops pursuing
-  # progress: it holds the entry position with damped position control and
-  # resumes path following only after the ball has been nearly still for
-  # stabilize_still_s (or the timeout expires). Followers are reset on exit
-  # so no stale integral/derivative state relaunches the ball.
+  # Trips ONLY on a genuine runaway - speed above BOTH a large multiple of the
+  # planned speed AND an absolute floor - so ordinary overshoot during normal
+  # following never triggers it (with the old 2x/+20 threshold it stabilized
+  # 64% of the run). While active it holds the entry position with damped
+  # control and NO forward progress; it exits the moment the ball is back under
+  # control (speed below exit_speed) for a brief settle, resetting the
+  # followers so no stale integral/derivative relaunches the ball.
   stabilize_enabled: true
-  stabilize_overspeed_margin_mm_s: 20.0
-  stabilize_exit_speed_mm_s: 5.0   # "still" means slower than this
-  stabilize_still_s: 0.6           # must stay still this long to resume
-  stabilize_max_s: 3.0             # give up holding after this and resume
+  stabilize_trigger_mult: 3.0             # fire above this x planned speed ...
+  stabilize_overspeed_margin_mm_s: 40.0   # ... and above planned + this ...
+  stabilize_trigger_speed_mm_s: 55.0      # ... and above this absolute floor
+  stabilize_exit_speed_mm_s: 18.0  # "back under control" = slower than this
+  stabilize_settle_s: 0.2          # hold that recovery this long, then resume
+  stabilize_max_s: 2.0             # give up holding after this and resume
   stabilize_kp: 0.010              # hold-position pull per mm of drift
   stabilize_kd: 0.012              # damping per mm/s of residual speed
   # --- Route speed profile (replaces the per-frame reactive hole cap) ---

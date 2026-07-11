@@ -327,14 +327,22 @@ def main() -> None:
     plan_latency_s = float(config.control.get("plan_latency_s", 0.35))
     slowzone_max_command = float(config.control.get("slowzone_max_command", 0.55))
     # Composure: when control gets violent (emergency, or speed far above
-    # plan), stop pursuing progress - hold position, damp the ball to rest,
-    # THEN resume. Prevents the freak-out cascade: rough brake -> too fast
-    # -> unstable -> pushed forward anyway -> hole.
+    # plan), stop pursuing progress - hold position, damp the ball, then
+    # resume the moment control is regained. Prevents the freak-out cascade:
+    # rough brake -> too fast -> unstable -> pushed forward anyway -> hole.
+    # Trigger only on a GENUINE runaway: fire when speed exceeds BOTH a large
+    # multiple of the planned speed AND an absolute floor, so ordinary
+    # overshoot during following never trips it (that over-triggered before).
     stabilize_enabled = bool(config.control.get("stabilize_enabled", True))
-    stabilize_margin = float(config.control.get("stabilize_overspeed_margin_mm_s", 20.0))
-    stabilize_exit_speed = float(config.control.get("stabilize_exit_speed_mm_s", 5.0))
-    stabilize_still_needed = float(config.control.get("stabilize_still_s", 0.6))
-    stabilize_max_s = float(config.control.get("stabilize_max_s", 3.0))
+    stabilize_margin = float(config.control.get("stabilize_overspeed_margin_mm_s", 40.0))
+    stabilize_trigger_mult = float(config.control.get("stabilize_trigger_mult", 3.0))
+    stabilize_trigger_floor = float(config.control.get("stabilize_trigger_speed_mm_s", 55.0))
+    # Exit as soon as the ball is back under control (speed below this) for a
+    # brief settle - NOT a dead stop, which held the ball frozen for the full
+    # timeout every time and blocked all progress.
+    stabilize_exit_speed = float(config.control.get("stabilize_exit_speed_mm_s", 18.0))
+    stabilize_settle_s = float(config.control.get("stabilize_settle_s", 0.2))
+    stabilize_max_s = float(config.control.get("stabilize_max_s", 2.0))
     stabilize_kp = float(config.control.get("stabilize_kp", 0.010))
     stabilize_kd = float(config.control.get("stabilize_kd", 0.012))
 
@@ -412,7 +420,10 @@ def main() -> None:
     ))
     print(f"controller: {mode}" + (
         f" (v_max {v_max:.0f} mm/s)" if mode in ("carrot", "velocity") else ""))
-    estimator = LowPassVelocityEstimator()
+    estimator = LowPassVelocityEstimator(
+        min_dt_s=float(config.control.get("velocity_min_dt_s", 0.006)),
+        max_speed_mm_s=float(config.control.get("velocity_max_speed_mm_s", 250.0)),
+    )
     total_length = float(path.cumulative_lengths[-1])
 
     trim = NeutralTrim.load_if_exists()
@@ -726,22 +737,27 @@ def main() -> None:
                         board_cmd = ((-brake_max_command / speed_now)
                                      * state.velocity_mm_s)
 
-                    # Composure state machine: enter on violence, hold
-                    # position and damp to rest, resume only once still.
+                    # Composure state machine: enter on a genuine runaway,
+                    # hold position and damp, resume the moment control is back.
                     if stabilize_enabled:
-                        overspeed = speed_now > max(2.0 * target_speed,
-                                                    target_speed + stabilize_margin)
+                        overspeed = speed_now > max(
+                            stabilize_trigger_mult * target_speed,
+                            target_speed + stabilize_margin,
+                            stabilize_trigger_floor)
                         if (emergency or overspeed) and not stabilize_active:
                             stabilize_active = True
                             freeze_point = state.position_mm.copy()
                             stabilize_entered = monotonic()
                             stabilize_still = 0.0
                         if stabilize_active and not emergency:
+                            # "settled" = speed recovered below exit_speed, held
+                            # briefly. Not a dead stop - once the ball is back
+                            # under control there is no reason to keep holding.
                             if speed_now < stabilize_exit_speed:
                                 stabilize_still += max(dt_s, 0.0)
                             else:
                                 stabilize_still = 0.0
-                            if (stabilize_still >= stabilize_still_needed
+                            if (stabilize_still >= stabilize_settle_s
                                     or monotonic() - stabilize_entered
                                     > stabilize_max_s):
                                 stabilize_active = False  # calm: resume path
