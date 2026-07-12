@@ -22,6 +22,9 @@ calibration/*.json
 calibration/*.yaml
 !calibration/README.md
 
+# Self-signed HTTPS cert for phone-tilt control (regenerated per machine)
+certs/
+
 # OS/editor
 .DS_Store
 .idea/

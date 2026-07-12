@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Maze Phone Tilt</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px; padding: 24px;
+    background: #1a1a2e; color: #eaeaea;
+    font-family: -apple-system, Helvetica, Arial, sans-serif; text-align: center;
+    user-select: none;
+  }
+  h1 { font-size: 20px; margin: 0; }
+  #status { font-size: 14px; }
+  #status.ok { color: #3ddc97; }
+  #status.bad { color: #888888; }
+  #crosshair-box {
+    width: 140px; height: 140px; border-radius: 12px; background: #16213e;
+    position: relative; overflow: hidden;
+  }
+  #crosshair-dot {
+    width: 18px; height: 18px; border-radius: 50%; background: #e94560;
+    position: absolute; top: 50%; left: 50%;
+    margin: -9px 0 0 -9px; transition: transform 0.05s linear;
+  }
+  button {
+    font-size: 16px; font-weight: bold; padding: 16px 28px; border-radius: 10px;
+    border: none; width: 260px; color: #eaeaea; cursor: pointer;
+  }
+  button:disabled { opacity: 0.35; }
+  #enable-btn { background: #1f9e89; }
+  #recenter-btn { background: #0f3460; }
+  #stop-btn { background: #e94560; }
+  #readout { font-size: 13px; color: #888888; }
+</style>
+</head>
+<body>
+  <h1>Maze Phone Tilt</h1>
+  <div id="status" class="bad">Not connected</div>
+  <div id="crosshair-box"><div id="crosshair-dot"></div></div>
+  <button id="enable-btn">Enable Tilt Control</button>
+  <button id="recenter-btn" disabled>Recenter</button>
+  <button id="stop-btn" disabled>Stop Streaming</button>
+  <div id="readout">beta: --   gamma: --</div>
+  <div id="readout">Hold portrait, flat like a tray, top edge away from you.</div>
+
+<script>
+(function () {
+  var SEND_INTERVAL_MS = 40; // 25Hz - same origin as the page, no separate port/cert needed
+  var enableBtn = document.getElementById('enable-btn');
+  var recenterBtn = document.getElementById('recenter-btn');
+  var stopBtn = document.getElementById('stop-btn');
+  var statusEl = document.getElementById('status');
+  var readoutEl = document.getElementById('readout');
+  var dot = document.getElementById('crosshair-dot');
+
+  var zeroBeta = 0;
+  var zeroGamma = 0;
+  var lastRaw = { beta: 0, gamma: 0 };
+  var lastOut = { beta: 0, gamma: 0 };
+  var sendTimer = null;
+  var sending = false;
+
+  function setStatus(text, ok) {
+    statusEl.textContent = text;
+    statusEl.className = ok ? 'ok' : 'bad';
+  }
+
+  function sendSample() {
+    if (sending) return; // don't pile up requests if the network is slow
+    sending = true;
+    fetch('/orientation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lastOut),
+    }).then(function () {
+      setStatus('Connected', true);
+    }).catch(function () {
+      setStatus('Send failed - retrying…', false);
+    }).finally(function () {
+      sending = false;
+    });
+  }
+
+  function handleOrientation(event) {
+    var beta = event.beta || 0;
+    var gamma = event.gamma || 0;
+    lastRaw = { beta: beta, gamma: gamma };
+    var outBeta = beta - zeroBeta;
+    var outGamma = gamma - zeroGamma;
+    lastOut = { beta: outBeta, gamma: outGamma };
+
+    readoutEl.textContent = 'beta: ' + outBeta.toFixed(1) + '   gamma: ' + outGamma.toFixed(1);
+    var nx = Math.max(-1, Math.min(1, outGamma / 45));
+    var ny = Math.max(-1, Math.min(1, outBeta / 45));
+    dot.style.transform = 'translate(' + (nx * 45) + 'px, ' + (ny * 45) + 'px)';
+  }
+
+  function startListening() {
+    window.addEventListener('deviceorientation', handleOrientation);
+    sendTimer = setInterval(sendSample, SEND_INTERVAL_MS);
+    recenterBtn.disabled = false;
+    stopBtn.disabled = false;
+    enableBtn.disabled = true;
+    setStatus('Connecting…', false);
+  }
+
+  function stopListening() {
+    window.removeEventListener('deviceorientation', handleOrientation);
+    if (sendTimer) clearInterval(sendTimer);
+    recenterBtn.disabled = true;
+    stopBtn.disabled = true;
+    enableBtn.disabled = false;
+    setStatus('Stopped', false);
+  }
+
+  enableBtn.addEventListener('click', function () {
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission().then(function (state) {
+        if (state === 'granted') {
+          startListening();
+        } else {
+          setStatus('Motion permission denied - enable in Settings > Safari > Motion & Orientation Access', false);
+        }
+      }).catch(function () {
+        setStatus('Motion permission request failed', false);
+      });
+    } else {
+      startListening();
+    }
+  });
+
+  recenterBtn.addEventListener('click', function () {
+    zeroBeta = lastRaw.beta;
+    zeroGamma = lastRaw.gamma;
+  });
+
+  stopBtn.addEventListener('click', stopListening);
+})();
+</script>
+</body>
+</html>
