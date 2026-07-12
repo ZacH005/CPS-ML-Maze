@@ -40,6 +40,34 @@ def test_burst_frame_does_not_manufacture_velocity():
     assert np.allclose(state.velocity_mm_s, [100.0, 0.0])  # 2 mm / 0.02 s
 
 
+def test_smoothing_is_frame_rate_invariant():
+    # The same jittery position signal, sampled at 10 fps and at 120 fps for the
+    # same real duration, must produce similar smoothed speed. A fixed per-frame
+    # alpha fails this (it smooths far less at high fps); the time-constant filter
+    # passes it. This is the regression that stopped the ball moving at 120 fps.
+    rng_amp = 0.5  # mm of position jitter around a parked ball
+    tau = 0.10
+
+    def parked_speed(fps: float) -> float:
+        est = LowPassVelocityEstimator(tau_s=tau)
+        dt = 1.0 / fps
+        speeds = []
+        t = 0.0
+        # deterministic alternating jitter (worst case for a difference filter)
+        for i in range(int(2.0 * fps)):
+            x = rng_amp if i % 2 == 0 else -rng_amp
+            s = est.update(np.array([x, 0.0]), timestamp_s=t)
+            speeds.append(float(np.linalg.norm(s.velocity_mm_s)))
+            t += dt
+        return float(np.mean(speeds[-int(fps):]))  # last ~1 s
+
+    slow = parked_speed(10.0)
+    fast = parked_speed(120.0)
+    # Both should read a small parked speed, and the fast loop must not be wildly
+    # noisier than the slow one (the old fixed-alpha filter made it ~10x worse).
+    assert fast < 3.0 * slow + 5.0
+
+
 def test_detection_jump_is_clamped():
     # A several-mm position jump at a normal dt (tracker mislock) is clamped in
     # magnitude before smoothing, so it cannot spike the speed.

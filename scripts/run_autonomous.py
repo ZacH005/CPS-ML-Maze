@@ -429,6 +429,7 @@ def main() -> None:
     print(f"controller: {mode}" + (
         f" (v_max {v_max:.0f} mm/s)" if mode in ("carrot", "velocity") else ""))
     estimator = LowPassVelocityEstimator(
+        tau_s=float(config.control.get("velocity_tau_s", 0.10)),
         min_dt_s=float(config.control.get("velocity_min_dt_s", 0.006)),
         max_speed_mm_s=float(config.control.get("velocity_max_speed_mm_s", 250.0)),
     )

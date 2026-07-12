@@ -168,6 +168,16 @@ control:
   # near holes are small and steady - control, not violent avoidance.
   plan_latency_s: 0.35
   slowzone_max_command: 0.55
+  # Velocity smoothing time constant (seconds). FRAME-RATE INVARIANT: the
+  # estimator uses an effective per-frame factor dt/(tau+dt), so the real-time
+  # smoothing is the same at 10 fps or 120 fps. This matters a lot: velocity is
+  # a finite difference whose noise grows as 1/dt, and the old fixed-alpha
+  # filter smoothed a fixed fraction PER FRAME, so at 120 fps it smoothed ~10x
+  # less and the parked-ball velocity jittered enough to block the stall-kick
+  # from firing - the ball moved fine at 10 fps and under manual control but
+  # would not break free from the start at 120 fps. Larger tau = smoother but
+  # more lag; lower it if fast braking feels sluggish.
+  velocity_tau_s: 0.10
   # --- Velocity-estimate guards (feed speed to control + stabilize) ---
   # The MSMF camera path delivers occasional burst frames ~0 ms apart; dividing
   # sub-mm detection jitter by ~0 s manufactured 300-490 mm/s phantom speeds

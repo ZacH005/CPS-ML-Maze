@@ -15,10 +15,22 @@ class BallState:
 class LowPassVelocityEstimator:
     """Smoothed board-frame velocity from successive position fixes.
 
-    Two guards keep the velocity estimate from exploding on bad samples, which
-    is critical because downstream logic (the stabilize state, the emergency
-    brake) reacts to speed and a phantom 400 mm/s spike triggers a needless
-    freak-out response:
+    Smoothing is FRAME-RATE INVARIANT. The velocity is a finite difference of
+    position, whose noise grows as 1/dt, so at a high frame rate the raw
+    velocity is far noisier. A fixed per-frame low-pass (v = a*measured +
+    (1-a)*v) smooths a fixed fraction PER FRAME, so at a high frame rate it also
+    smooths far less in real time - the two effects compound. When the camera
+    went from ~10 fps to ~120 fps this made the parked-ball velocity jitter from
+    a clean ~0 to 2-18 mm/s, which blocked the stall-kick from firing (it needs
+    speed < a threshold to persist) and left the ball unable to break static
+    friction at the start, even though it drove fine at 10 fps and under manual
+    control. The fix: smooth with a TIME CONSTANT ``tau_s`` so the effective
+    per-frame factor is ``dt/(tau_s+dt)`` - the same real-time smoothing at any
+    frame rate.
+
+    Two guards additionally keep the estimate from exploding on bad samples,
+    because downstream logic (stall kick, stabilize, emergency brake) reacts to
+    speed and a phantom 400 mm/s spike triggers needless behavior:
 
     * ``min_dt_s`` - the camera (esp. MSMF) sometimes delivers frames in a
       burst, so two reads land ~0 ms apart. Dividing a sub-millimetre detection
@@ -30,18 +42,34 @@ class LowPassVelocityEstimator:
       jumps the position several mm in one frame. The measured velocity is
       clamped in magnitude before it enters the low-pass filter, so one bad fix
       cannot inject a spike. Set generously above any real ball speed.
+
+    ``alpha`` (optional) overrides the time-constant smoothing with a FIXED
+    per-frame factor. It is frame-rate dependent and exists only for
+    deterministic tests; production code should use ``tau_s``.
     """
 
-    def __init__(self, alpha: float = 0.35, min_dt_s: float = 0.006,
-                 max_speed_mm_s: float = 250.0):
-        if not 0.0 < alpha <= 1.0:
+    def __init__(self, tau_s: float = 0.10, min_dt_s: float = 0.006,
+                 max_speed_mm_s: float = 250.0, alpha: float | None = None):
+        if alpha is not None and not 0.0 < alpha <= 1.0:
             raise ValueError("alpha must be in (0, 1]")
+        if tau_s < 0.0:
+            raise ValueError("tau_s must be >= 0")
+        self.tau_s = float(tau_s)
         self.alpha = alpha
         self.min_dt_s = float(min_dt_s)
         self.max_speed_mm_s = float(max_speed_mm_s)
         self.previous_position: np.ndarray | None = None
         self.previous_timestamp_s: float | None = None
         self.velocity_mm_s = np.zeros(2, dtype=float)
+
+    def _blend(self, dt: float) -> float:
+        """Per-frame smoothing factor. Time-constant based (frame-rate
+        invariant) unless a fixed alpha was supplied."""
+        if self.alpha is not None:
+            return self.alpha
+        if self.tau_s <= 0.0:
+            return 1.0
+        return dt / (self.tau_s + dt)
 
     def reset(self) -> None:
         self.previous_position = None
@@ -67,8 +95,9 @@ class LowPassVelocityEstimator:
                 # Detection jump, not real motion: clamp magnitude before it
                 # enters the filter so one mislocated fix cannot spike the speed.
                 measured_velocity = measured_velocity * (self.max_speed_mm_s / speed)
+            a = self._blend(dt)
             self.velocity_mm_s = (
-                self.alpha * measured_velocity + (1.0 - self.alpha) * self.velocity_mm_s
+                a * measured_velocity + (1.0 - a) * self.velocity_mm_s
             )
 
         self.previous_position = position_mm
