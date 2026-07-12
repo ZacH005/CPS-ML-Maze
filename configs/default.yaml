@@ -41,7 +41,12 @@ vision:
   tracker: "pipeline"
   # Specular gate for the pipeline tracker. Measured on this rig with
   # debug_tracking: ball glints 243 when still, everything else <= ~210.
-  min_specular: 240
+  # MUST stay BELOW the still-ball glint (243): a parked ball has no motion
+  # cue, so it must pass this gate or it vanishes the moment it stops - which
+  # also blinds stall detection. 250 was above 243 and made a stationary ball
+  # disappear (observed: lost after sitting still ~25 s). 230 leaves margin on
+  # both sides (243 ball, ~210 background). Re-measure per lighting session.
+  min_specular: 230
   # Motion blur smears the glint exactly when the ball moves fast (observed
   # dips to ~194 while tracked). Motion-cue candidates are already strong
   # evidence (moving, round, ball-sized), so they get a lower gate.
