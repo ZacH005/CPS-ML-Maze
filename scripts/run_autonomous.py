@@ -62,6 +62,7 @@ RUN_LOG_FIELDS = [
     "hole_hazard_distance_mm", "hole_speed_cap_mm_s",
     "wall_escape_x", "wall_escape_y",
     "board_cmd_x", "board_cmd_y", "yaw_command", "pitch_command",
+    "stall_kick",
 ]
 
 
@@ -825,6 +826,17 @@ def main() -> None:
                             # single frame, which the servo cannot follow.
                             servo_cmd = prev_servo_cmd.copy()
                     prev_servo_cmd = servo_cmd.copy()
+                    # Stall-kick indicator: how hard the breakaway kick is
+                    # currently pushing a stuck ball (0 = not kicking). Watching
+                    # this tells a stall being actively worked (KICK ramping,
+                    # ball then moves) apart from a dead loop (KICK pinned high
+                    # while progress never advances).
+                    if mode == "carrot":
+                        stall_kick_now = carrot_follower.kicker.last_kick
+                    elif mode == "velocity":
+                        stall_kick_now = velocity_follower.kicker.last_kick
+                    else:
+                        stall_kick_now = follower.kicker.last_kick
                     status = f"progress {progress:.0f}/{total_length:.0f} mm"
                     if hole_brake == "stabilize":
                         status += "  STABILIZING"
@@ -832,6 +844,8 @@ def main() -> None:
                         status += "  EMERGENCY BRAKE"
                     elif hole_brake == "slow":
                         status += "  hole ahead"
+                    if stall_kick_now > 0.0:
+                        status += f"  KICK {stall_kick_now:.2f}"
                     if float(np.linalg.norm(wall_escape)) > 1e-9:
                         status += "  wall escape"
                     if recovery_reason:
@@ -856,6 +870,7 @@ def main() -> None:
                         "wall_escape_x": wall_escape[0], "wall_escape_y": wall_escape[1],
                         "board_cmd_x": board_cmd[0], "board_cmd_y": board_cmd[1],
                         "yaw_command": servo_cmd[0], "pitch_command": servo_cmd[1],
+                        "stall_kick": stall_kick_now,
                     })
 
                     if progress >= total_length - args.goal_tolerance_mm:

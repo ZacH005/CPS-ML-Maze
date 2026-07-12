@@ -145,15 +145,15 @@ control:
   stall_kick_ramp_per_s: 0.25
   # Max |servo command| change per second sent to hardware; smooths sudden
   # jumps (stiction kicks, re-association) so corners aren't punched through.
-  command_slew_per_s: 1.5
-  max_command: 0.9
+  command_slew_per_s: 4
+  max_command: 1
   # --- Braking authority ---
   # max_command is a gentleness cap for DRIVING. Stopping a fast ball needs
   # more tilt than driving does: commands that oppose the current motion may
   # use the full firmware range, and reverse much faster than the driving
   # slew (reversing +0.45 -> -0.45 at 3.0/s wastes 300 ms = 60 mm at
   # 200 mm/s). The firmware pulse clamp still bounds everything.
-  brake_max_command: 0.9
+  brake_max_command: 1
   brake_slew_per_s: 12
   # ABS: tilt is FORCE, so a brake tilt still applied when the ball stops
   # launches it backward (observed: braked to a stop at hole 2, then
@@ -257,12 +257,11 @@ control:
   # Local recovery planner: when the ball is off-route, stalled, or the
   # marker is across a wall, plan a temporary A* path from the actual ball
   # position to the current carrot/marker through wall- and hole-safe space.
-  # DISABLED: the camera's oblique view of the walls is imperfect, so the ball
-  # often looks like it is touching a wall when it is not, which fires false
-  # "A* recovery: wall" episodes that hijack the carrot and make things worse.
-  # Re-enable only with a cleaner wall view / mask. The normal path following +
-  # off-route wall speed-scale + emergency brake still handle recovery.
-  recovery_astar_enabled: false
+  # Re-enabled: the not-moving problem was the velocity estimator and command
+  # slew, not A*. Caveat: the camera's oblique wall view can make the ball look
+  # like it is touching a wall, which can fire false "A* recovery: wall"
+  # episodes - watch the status line; if it hijacks the carrot, set false again.
+  recovery_astar_enabled: true
   recovery_astar_grid_mm: 4.0
   recovery_astar_follow_mm: 20.0
   recovery_astar_goal_lookahead_mm: 35.0

@@ -32,9 +32,11 @@ class StallKicker:
         self.ramp_per_s = ramp_per_s
         self.release_factor = release_factor
         self.low_speed_time_s = 0.0
+        self.last_kick = 0.0  # most recent kick magnitude (0 = not kicking)
 
     def reset(self) -> None:
         self.low_speed_time_s = 0.0
+        self.last_kick = 0.0
 
     def update(self, speed_mm_s: float, dt_s: float) -> float:
         """Returns 0.0 (no kick) or the kick magnitude to enforce."""
@@ -50,9 +52,11 @@ class StallKicker:
             self.low_speed_time_s += 0.5 * max(dt_s, 0.0)
 
         if self.kick <= 0.0 or self.low_speed_time_s < self.min_duration_s:
-            return 0.0
-        stalled_for = self.low_speed_time_s - self.min_duration_s
-        return self.kick + self.ramp_per_s * stalled_for
+            self.last_kick = 0.0
+        else:
+            stalled_for = self.low_speed_time_s - self.min_duration_s
+            self.last_kick = self.kick + self.ramp_per_s * stalled_for
+        return self.last_kick
 
 
 @dataclass
