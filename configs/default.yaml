@@ -241,14 +241,14 @@ control:
   # Committed speed THROUGH a hole pass. Deliberately not a crawl: slow
   # rolling near a hole maximizes exposure and stiction cycling; a moderate
   # committed speed crosses quickly and stably.
-  hole_pass_mm_s: 15.0
-  hole_slow_band_mm: 15.0   # ramp from cruise down to pass speed over this
+  hole_pass_mm_s: 12.0
+  hole_slow_band_mm: 35.0   # ramp from cruise down to pass speed over this
   # Latest pseudostuck run stalled in the 193-201mm corridor with target speed
   # around 12mm/s and no local hole danger. Keep safe corridors rolling above
   # the observed stiction-dominated crawl regime.
-  profile_floor_mm_s: 15.0  # the plan never asks for slower than this
+  profile_floor_mm_s: 12.0  # the plan never asks for slower than this
   end_speed_mm_s: 10.0      # arrive gently at the goal
-  hole_margin_mm: 2.0       # extra capture clearance around each hole
+  hole_margin_mm: 6.0       # extra capture clearance around each hole
   ball_radius_mm: 4.0
   # Achievable deceleration from board tilt; used for the profile's braking
   # and acceleration passes and the emergency stopping-distance check.
