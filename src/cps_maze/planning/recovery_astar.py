@@ -233,3 +233,65 @@ def progress_limited_point_along_polyline(
         if progress >= min_progress:
             return point
     return points[-1]
+
+
+def bounded_recovery_point_along_polyline(
+    points_mm: np.ndarray,
+    nominal_path: WaypointPath,
+    ball_position_mm: np.ndarray,
+    current_progress_mm: float,
+    distance_mm: float,
+    max_backtrack_mm: float = 4.0,
+    max_forward_mm: float = 45.0,
+    max_target_distance_mm: float = 28.0,
+    sample_mm: float = 2.0,
+    projection_window_mm: float = 120.0,
+) -> np.ndarray | None:
+    """Pick a local recovery waypoint, or None if A* only offers bad targets.
+
+    Recovery A* is allowed to find a path through nearby free space, but the
+    visible controller target must remain local to the ball and local in route
+    progress. Returning None is deliberate: normal path following is safer than
+    chasing a recovery point on a different corridor.
+    """
+    points = np.asarray(points_mm, dtype=float)
+    if len(points) == 0:
+        raise ValueError("points_mm must not be empty")
+
+    ball = np.asarray(ball_position_mm, dtype=float)
+    if len(points) == 1:
+        candidate = points[0]
+        if float(np.linalg.norm(candidate - ball)) > max_target_distance_mm:
+            return None
+        progress, _cross = nominal_path.nearest_progress_and_distance_mm(
+            candidate,
+            near_progress_mm=current_progress_mm,
+            window_mm=projection_window_mm,
+        )
+        min_progress = float(current_progress_mm) - max(float(max_backtrack_mm), 0.0)
+        max_progress = float(current_progress_mm) + max(float(max_forward_mm), 0.0)
+        return candidate if min_progress <= progress <= max_progress else None
+
+    segment_lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    total = float(np.sum(segment_lengths))
+    start_d = min(max(float(distance_mm), 0.0), total)
+    step = max(float(sample_mm), 1e-6)
+    min_progress = float(current_progress_mm) - max(float(max_backtrack_mm), 0.0)
+    max_progress = float(current_progress_mm) + max(float(max_forward_mm), 0.0)
+    max_distance = max(float(max_target_distance_mm), 0.0)
+
+    distances = list(np.arange(start_d, total + step, step))
+    if not distances or distances[-1] < total:
+        distances.append(total)
+    for d in distances:
+        point = point_along_polyline(points, min(float(d), total))
+        if float(np.linalg.norm(point - ball)) > max_distance:
+            continue
+        progress, _cross = nominal_path.nearest_progress_and_distance_mm(
+            point,
+            near_progress_mm=current_progress_mm,
+            window_mm=projection_window_mm,
+        )
+        if min_progress <= progress <= max_progress:
+            return point
+    return None

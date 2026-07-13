@@ -100,8 +100,8 @@ control:
   k_lat: 1.6             # pull toward centerline (per mm of cross-track)
   lat_v_max_mm_s: 18.0
   k_vel: 0.012           # tilt per mm/s of velocity error
-  carrot_lookahead_mm: 20
-  carrot_min_lookahead_mm: 4.0
+  carrot_lookahead_mm: 22
+  carrot_min_lookahead_mm: 8.0
   lookahead_mm: 18.0
   kp: 0.015
   kd: 0.006
@@ -154,29 +154,34 @@ control:
   # rolling near a hole maximizes exposure and stiction cycling; a moderate
   # committed speed crosses quickly and stably.
   hole_pass_mm_s: 15.0
-  hole_slow_band_mm: 15.0   # ramp from cruise down to pass speed over this
+  hole_slow_band_mm: 25.0   # ramp from cruise down to pass speed over this
   # Latest pseudostuck run stalled in the 193-201mm corridor with target speed
   # around 12mm/s and no local hole danger. Keep safe corridors rolling above
   # the observed stiction-dominated crawl regime.
   profile_floor_mm_s: 15.0  # the plan never asks for slower than this
   end_speed_mm_s: 10.0      # arrive gently at the goal
-  hole_margin_mm: 2.0       # extra capture clearance around each hole
+  hole_margin_mm: 4.0       # extra capture clearance around each hole
   ball_radius_mm: 4.0
   # Achievable deceleration from board tilt; used for the profile's braking
   # and acceleration passes and the emergency stopping-distance check.
-  hole_brake_accel_mm_s2: 250
+  hole_brake_accel_mm_s2: 150
   # Reactive: full brake opposite the velocity (bypassing the slew limiter)
   # when the trajectory enters a hole and stopping distance exceeds the
   # distance to it.
-  hole_emergency_brake: true
+  hole_emergency_brake: false
   # The emergency only fires for genuine RUN-OFFS. The route legitimately
   # threads between close holes whose capture zones overlap the centerline;
   # a ball rolling along the route there is a planned pass (the crawl
   # handles it), and braking it creates a brake/kick limit cycle that acts
   # like an invisible wall. Fire only when the ball is off the centerline
   # or moving misaligned with the path direction:
-  hole_emergency_offroute_mm: 15.0
-  hole_emergency_align_deg: 50.0
+  hole_emergency_offroute_mm: 8.0
+  hole_emergency_align_deg: 35.0
+  # Capture-zone override: when the ball is already near/inside an inflated
+  # hole zone and still moving, brake even if its heading looks aligned with
+  # the nominal route. This catches late run-offs before the fall is final.
+  hole_emergency_clearance_mm: 2.0
+  hole_emergency_clearance_speed_mm_s: 25.0
   # When the ball is stalled while physically close to a wall, ensure the
   # command has at least this much component away from the nearest wall. This
   # is a local unstick bias for outside-corner catches; it does not change
@@ -185,22 +190,29 @@ control:
   wall_escape_speed_mm_s: 15.0
   wall_escape_command: 0.22
   wall_escape_min_command: 0.08
-  # Local recovery planner: when the ball is off-route, stalled, or the
-  # marker is across a wall, plan a temporary A* path from the actual ball
-  # position to the current carrot/marker through wall- and hole-safe space.
-  recovery_astar_enabled: true
+  # Local recovery planner: guarded fallback for off-route or wall-blocked
+  # states. A* is throttled/cached and its visible target must remain local,
+  # so it cannot stall the camera loop or jump to another corridor.
+  recovery_astar_enabled: false
   recovery_astar_grid_mm: 4.0
   recovery_astar_follow_mm: 20.0
+  recovery_astar_min_interval_s: 0.25
+  recovery_astar_cache_max_age_s: 0.75
+  recovery_astar_max_target_distance_mm: 28.0
+  recovery_astar_max_target_progress_ahead_mm: 45.0
   recovery_astar_goal_lookahead_mm: 35.0
   recovery_astar_max_backtrack_mm: 4.0
-  recovery_astar_cross_track_mm: 15.0
-  recovery_astar_wall_mm: 4.0
+  recovery_astar_cross_track_mm: 25.0
+  recovery_astar_wall_mm: 3.0
   recovery_astar_stall_speed_mm_s: 5.0
-  recovery_astar_stall_duration_s: 0.8
+  recovery_astar_stall_duration_s: 1.2
   recovery_astar_wall_clearance_mm: 2.0
   recovery_astar_hole_clearance_mm: 0.0
   recovery_astar_max_snap_mm: 18.0
-  recovery_astar_max_expansions: 8000
+  recovery_astar_max_expansions: 3000
+  association_max_progress_jump_mm: 12.0
+  association_global_reacquire_cross_mm: 30.0
+  association_global_reacquire_frames: 3
 
 maze:
   # Play-area size. VERIFY WITH A RULER: merged value was 3220x2820,

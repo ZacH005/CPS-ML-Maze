@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-from ctypes import ArgumentError
+from dataclasses import dataclass
 import time
 from pathlib import Path
 from time import monotonic
@@ -43,7 +43,7 @@ from cps_maze.planning.path import WaypointPath
 from cps_maze.planning.recovery_astar import (
     RecoveryAStarConfig,
     RecoveryAStarPlanner,
-    progress_limited_point_along_polyline,
+    bounded_recovery_point_along_polyline,
 )
 from cps_maze.planning.speed_profile import build_speed_profile
 from cps_maze.planning.walls import WallMap
@@ -55,13 +55,143 @@ WINDOW = "autonomous run"
 RUN_LOG_FIELDS = [
     "timestamp_s", "found", "x_mm", "y_mm", "vx_mm_s", "vy_mm_s",
     "target_x_mm", "target_y_mm", "progress_mm",
+    "loop_dt_ms", "association_mode", "progress_delta_mm",
     "carrot_x_mm", "carrot_y_mm", "desired_vx_mm_s", "desired_vy_mm_s",
     "cross_track_mm", "turn_deg", "wall_speed_scale", "hole_brake",
     "wall_distance_mm", "target_speed_mm_s",
     "hole_hazard_distance_mm", "hole_speed_cap_mm_s",
+    "hole_clearance_mm",
+    "recovery_reason", "recovery_active", "recovery_plan_ms",
+    "recovery_target_distance_mm", "recovery_cache_age_ms",
     "wall_escape_x", "wall_escape_y",
     "board_cmd_x", "board_cmd_y", "yaw_command", "pitch_command",
 ]
+
+
+@dataclass(frozen=True)
+class AssociationResult:
+    progress_mm: float
+    cross_track_mm: float
+    progress_delta_mm: float
+    mode: str
+    high_cross_frames: int
+
+
+@dataclass(frozen=True)
+class RecoveryRuntimeResult:
+    target_mm: np.ndarray | None
+    active: bool
+    plan_ms: float
+    target_distance_mm: float | None
+    cache_age_ms: float | None
+
+
+class RecoveryAStarRuntime:
+    """Throttles A* and reuses only bounded local recovery targets."""
+
+    def __init__(
+        self,
+        planner: RecoveryAStarPlanner,
+        nominal_path: WaypointPath,
+        *,
+        min_interval_s: float,
+        cache_max_age_s: float,
+        follow_mm: float,
+        max_backtrack_mm: float,
+        max_forward_mm: float,
+        max_target_distance_mm: float,
+    ):
+        self.planner = planner
+        self.nominal_path = nominal_path
+        self.min_interval_s = max(float(min_interval_s), 0.0)
+        self.cache_max_age_s = max(float(cache_max_age_s), 0.0)
+        self.follow_mm = float(follow_mm)
+        self.max_backtrack_mm = float(max_backtrack_mm)
+        self.max_forward_mm = float(max_forward_mm)
+        self.max_target_distance_mm = float(max_target_distance_mm)
+        self._last_plan_s: float | None = None
+        self._cached_at_s: float | None = None
+        self._cached_target: np.ndarray | None = None
+
+    def reset(self) -> None:
+        self._last_plan_s = None
+        self._cached_at_s = None
+        self._cached_target = None
+
+    def target_for(
+        self,
+        now_s: float,
+        ball_position_mm: np.ndarray,
+        current_progress_mm: float,
+        goal_mm: np.ndarray,
+        reason: str,
+    ) -> RecoveryRuntimeResult:
+        if not reason:
+            self._cached_target = None
+            self._cached_at_s = None
+            return RecoveryRuntimeResult(None, False, 0.0, None, None)
+
+        cached_age_s = (
+            float(now_s) - self._cached_at_s
+            if self._cached_at_s is not None else None
+        )
+        cache_valid = (
+            self._cached_target is not None
+            and cached_age_s is not None
+            and cached_age_s <= self.cache_max_age_s
+            and float(np.linalg.norm(self._cached_target - ball_position_mm))
+            <= self.max_target_distance_mm
+        )
+        plan_age_s = (
+            float(now_s) - self._last_plan_s
+            if self._last_plan_s is not None else None
+        )
+        if cache_valid and plan_age_s is not None and plan_age_s < self.min_interval_s:
+            return RecoveryRuntimeResult(
+                self._cached_target.copy(),
+                True,
+                0.0,
+                float(np.linalg.norm(self._cached_target - ball_position_mm)),
+                cached_age_s * 1000.0,
+            )
+
+        start = monotonic()
+        recovery_path = self.planner.plan(ball_position_mm, goal_mm)
+        plan_ms = (monotonic() - start) * 1000.0
+        self._last_plan_s = float(now_s)
+
+        target = None
+        if recovery_path is not None and len(recovery_path) >= 2:
+            target = bounded_recovery_point_along_polyline(
+                recovery_path,
+                self.nominal_path,
+                ball_position_mm,
+                current_progress_mm,
+                self.follow_mm,
+                self.max_backtrack_mm,
+                self.max_forward_mm,
+                self.max_target_distance_mm,
+            )
+        if target is not None:
+            self._cached_target = target
+            self._cached_at_s = float(now_s)
+            return RecoveryRuntimeResult(
+                target.copy(),
+                True,
+                plan_ms,
+                float(np.linalg.norm(target - ball_position_mm)),
+                0.0,
+            )
+
+        if cache_valid:
+            return RecoveryRuntimeResult(
+                self._cached_target.copy(),
+                True,
+                plan_ms,
+                float(np.linalg.norm(self._cached_target - ball_position_mm)),
+                cached_age_s * 1000.0,
+            )
+        return RecoveryRuntimeResult(None, False, plan_ms, None, None)
 
 
 def load_holes(path: Path) -> np.ndarray:
@@ -98,6 +228,130 @@ def choose_carrot_point(
 
     point = path.point_at_progress_mm(progress_mm + min_lookahead)
     return point, min_lookahead
+
+
+def _best_path_projection(
+    path: WaypointPath,
+    position_mm: np.ndarray,
+    progress_hint_mm: float | None,
+    wall_map: WallMap | None,
+) -> tuple[float, float]:
+    if wall_map is None:
+        return path.nearest_progress_and_distance_mm(position_mm, progress_hint_mm)
+
+    cands = path.candidate_projections(position_mm, progress_hint_mm)
+    clear = [c for c in cands if not wall_map.line_blocked(position_mm, c[2])]
+    if not clear:
+        clear = cands
+    progress, cross, _projection = clear[0]
+    return progress, cross
+
+
+def associate_progress_guarded(
+    path: WaypointPath,
+    position_mm: np.ndarray,
+    progress_est_mm: float | None,
+    wall_map: WallMap | None,
+    speed_mm_s: float,
+    dt_s: float,
+    high_cross_frames: int,
+    *,
+    max_progress_jump_mm: float,
+    global_reacquire_cross_mm: float,
+    global_reacquire_frames: int = 3,
+) -> AssociationResult:
+    """Associate ball position to route progress without one-frame corridor jumps."""
+    if progress_est_mm is None:
+        progress, cross = _best_path_projection(path, position_mm, None, wall_map)
+        return AssociationResult(progress, cross, 0.0, "init", 0)
+
+    progress, cross = _best_path_projection(path, position_mm, progress_est_mm, wall_map)
+    next_high_cross = (
+        high_cross_frames + 1
+        if cross >= global_reacquire_cross_mm else 0
+    )
+    mode = "local"
+    if next_high_cross >= max(int(global_reacquire_frames), 1):
+        global_progress, global_cross = _best_path_projection(path, position_mm, None, wall_map)
+        progress, cross = global_progress, global_cross
+        next_high_cross = 0
+        mode = "global_reacquire"
+
+    delta = progress - float(progress_est_mm)
+    max_jump = max(
+        float(max_progress_jump_mm),
+        2.5 * max(float(speed_mm_s), 0.0) * max(float(dt_s), 0.0) + 5.0,
+    )
+    if mode != "global_reacquire" and abs(delta) > max_jump:
+        progress = float(progress_est_mm)
+        cross = float(np.linalg.norm(
+            np.asarray(position_mm, dtype=float)
+            - path.point_at_progress_mm(progress)
+        ))
+        delta = 0.0
+        mode = "jump_guard"
+
+    return AssociationResult(progress, cross, delta, mode, next_high_cross)
+
+
+def recovery_reason_for_state(
+    cross_track_mm: float,
+    wall_distance_mm: float,
+    speed_mm_s: float,
+    low_speed_duration_s: float,
+    recovery_goal_mm: np.ndarray,
+    state_position_mm: np.ndarray,
+    wall_map: WallMap | None,
+    *,
+    cross_track_trigger_mm: float,
+    wall_distance_trigger_mm: float,
+    stall_speed_mm_s: float,
+    stall_duration_s: float,
+) -> str:
+    if cross_track_mm >= cross_track_trigger_mm:
+        return "offroute"
+    if wall_map is not None and wall_map.line_blocked(state_position_mm, recovery_goal_mm):
+        return "wall"
+    offcenter_for_wall = max(8.0, 0.5 * cross_track_trigger_mm)
+    if (wall_distance_mm <= wall_distance_trigger_mm
+            and speed_mm_s < stall_speed_mm_s
+            and low_speed_duration_s >= stall_duration_s
+            and cross_track_mm >= offcenter_for_wall):
+        return "wall"
+    return ""
+
+
+def should_apply_hole_emergency(
+    hole_map: HoleMap,
+    position_mm: np.ndarray,
+    velocity_mm_s: np.ndarray,
+    brake_accel_mm_s2: float,
+    path_tangent: np.ndarray,
+    cross_track_mm: float,
+    *,
+    offroute_mm: float,
+    align_deg: float,
+    clearance_mm: float,
+    clearance_trigger_mm: float,
+    clearance_speed_mm_s: float,
+    min_trajectory_speed_mm_s: float = 15.0,
+) -> bool:
+    speed = float(np.linalg.norm(velocity_mm_s))
+    if clearance_mm <= clearance_trigger_mm and speed > clearance_speed_mm_s:
+        return True
+    return (
+        speed > min_trajectory_speed_mm_s
+        and should_emergency_brake(
+            hole_map,
+            position_mm,
+            velocity_mm_s,
+            brake_accel_mm_s2,
+            path_tangent=path_tangent,
+            cross_track_mm=float(cross_track_mm),
+            offroute_mm=offroute_mm,
+            align_deg=align_deg,
+        )
+    )
 
 
 def draw_overlay(
@@ -235,27 +489,44 @@ def main() -> None:
         ball_radius_mm=float(config.control.get("ball_radius_mm", 6.0)),
         margin_mm=float(config.control.get("hole_margin_mm", 4.0)),
     )
-    hole_brake_accel = float(config.control.get("hole_brake_accel_mm_s2", 250.0))
+    hole_brake_accel = float(config.control.get("hole_brake_accel_mm_s2", 150.0))
     hole_emergency = bool(config.control.get("hole_emergency_brake", True))
     hole_emergency_offroute_mm = float(config.control.get(
-        "hole_emergency_offroute_mm", 12.0))
+        "hole_emergency_offroute_mm", 8.0))
     hole_emergency_align_deg = float(config.control.get(
-        "hole_emergency_align_deg", 40.0))
+        "hole_emergency_align_deg", 35.0))
+    hole_emergency_clearance_mm = float(config.control.get(
+        "hole_emergency_clearance_mm", 2.0))
+    hole_emergency_clearance_speed_mm_s = float(config.control.get(
+        "hole_emergency_clearance_speed_mm_s", 25.0))
     wall_escape_distance_mm = float(config.control.get("wall_escape_distance_mm", 6.0))
     wall_escape_speed_mm_s = float(config.control.get("wall_escape_speed_mm_s", 8.0))
     wall_escape_command = float(config.control.get("wall_escape_command", 0.20))
     wall_escape_min_cmd = float(config.control.get("wall_escape_min_command", 0.08))
     recovery_enabled = bool(config.control.get("recovery_astar_enabled", True))
-    recovery_cross_track_mm = float(config.control.get("recovery_astar_cross_track_mm", 15.0))
-    recovery_wall_distance_mm = float(config.control.get("recovery_astar_wall_mm", 4.0))
+    recovery_cross_track_mm = float(config.control.get("recovery_astar_cross_track_mm", 25.0))
+    recovery_wall_distance_mm = float(config.control.get("recovery_astar_wall_mm", 3.0))
     recovery_stall_speed_mm_s = float(config.control.get("recovery_astar_stall_speed_mm_s", 5.0))
-    recovery_stall_duration_s = float(config.control.get("recovery_astar_stall_duration_s", 0.8))
+    recovery_stall_duration_s = float(config.control.get("recovery_astar_stall_duration_s", 1.2))
     recovery_follow_mm = float(config.control.get("recovery_astar_follow_mm", 20.0))
+    recovery_min_interval_s = float(config.control.get("recovery_astar_min_interval_s", 0.25))
+    recovery_cache_max_age_s = float(config.control.get("recovery_astar_cache_max_age_s", 0.75))
+    recovery_max_target_distance_mm = float(config.control.get(
+        "recovery_astar_max_target_distance_mm", 28.0))
+    recovery_max_forward_mm = float(config.control.get(
+        "recovery_astar_max_target_progress_ahead_mm", 45.0))
     recovery_goal_lookahead_mm = float(config.control.get(
         "recovery_astar_goal_lookahead_mm", 35.0))
     recovery_max_backtrack_mm = float(config.control.get(
         "recovery_astar_max_backtrack_mm", 4.0))
+    association_max_progress_jump_mm = float(config.control.get(
+        "association_max_progress_jump_mm", 12.0))
+    association_global_reacquire_cross_mm = float(config.control.get(
+        "association_global_reacquire_cross_mm", 30.0))
+    association_global_reacquire_frames = int(config.control.get(
+        "association_global_reacquire_frames", 3))
     recovery_planner = None
+    recovery_runtime = None
     if recovery_enabled and wall_map is not None:
         recovery_planner = RecoveryAStarPlanner(
             wall_map,
@@ -268,8 +539,18 @@ def main() -> None:
                     "recovery_astar_hole_clearance_mm", 0.0)),
                 max_snap_mm=float(config.control.get("recovery_astar_max_snap_mm", 18.0)),
                 max_expansions=int(config.control.get(
-                    "recovery_astar_max_expansions", 8000)),
+                    "recovery_astar_max_expansions", 3000)),
             ),
+        )
+        recovery_runtime = RecoveryAStarRuntime(
+            recovery_planner,
+            path,
+            min_interval_s=recovery_min_interval_s,
+            cache_max_age_s=recovery_cache_max_age_s,
+            follow_mm=recovery_follow_mm,
+            max_backtrack_mm=recovery_max_backtrack_mm,
+            max_forward_mm=recovery_max_forward_mm,
+            max_target_distance_mm=recovery_max_target_distance_mm,
         )
     # Braking authority: max_command is a DRIVING gentleness cap; stopping a
     # fast ball needs the full tilt range (the firmware still clamps).
@@ -286,8 +567,8 @@ def main() -> None:
     profile = build_speed_profile(
         path, hole_map, wall_map,
         v_max_mm_s=v_max,
-        hole_pass_mm_s=float(config.control.get("hole_pass_mm_s", 16.0)),
-        hole_slow_band_mm=float(config.control.get("hole_slow_band_mm", 20.0)),
+        hole_pass_mm_s=float(config.control.get("hole_pass_mm_s", 15.0)),
+        hole_slow_band_mm=float(config.control.get("hole_slow_band_mm", 25.0)),
         floor_mm_s=float(config.control.get("profile_floor_mm_s", 12.0)),
         corner_slow_deg=float(config.control.get("corner_slow_deg", 110.0)),
         corner_span_mm=corner_span_mm,
@@ -364,6 +645,7 @@ def main() -> None:
     last_seen = monotonic()
     prev_timestamp_s = None
     progress_est = None  # last known path progress; keeps association local
+    association_high_cross_frames = 0
     prev_servo_cmd = np.zeros(2)  # for command-slew limiting
     recovery_low_speed_s = 0.0
     outcome = "stopped by user"
@@ -424,9 +706,12 @@ def main() -> None:
                 if seed is not None and hasattr(tracker, "seed"):
                     tracker.seed(*seed)  # click the ball to (re)seed the track
                     progress_est = None  # ball may have been moved: re-associate
+                    association_high_cross_frames = 0
                     prev_timestamp_s = None
                     prev_servo_cmd = np.zeros(2)
                     recovery_low_speed_s = 0.0
+                    if recovery_runtime is not None:
+                        recovery_runtime.reset()
                     estimator.reset()
                     follower.reset()
                     velocity_follower.reset()
@@ -445,47 +730,39 @@ def main() -> None:
                         dtype=float,
                     )
                     state = estimator.update(board_xy, frame.timestamp_s)
-                    # Windowed projection: the ball cannot jump along the path
-                    # between frames, so never associate it with a corridor far
-                    # away in path order. With a wall mask, additionally reject
-                    # candidates whose line of sight from the ball crosses a
-                    # wall (adjacent chicane corridors sit inside the window).
-                    if wall_map is not None:
-                        cands = path.candidate_projections(board_xy, progress_est)
-                        clear = [c for c in cands
-                                 if not wall_map.line_blocked(board_xy, c[2])]
-                        if not clear:  # wedged against a wall: nearest anyway
-                            clear = cands
-                        progress, cross, _ = clear[0]
-                        if progress_est is not None and cross > 35.0:
-                            cands = path.candidate_projections(board_xy, None)
-                            clear = [c for c in cands
-                                     if not wall_map.line_blocked(board_xy, c[2])]
-                            if clear:
-                                progress, cross, _ = clear[0]
-                    else:
-                        progress, cross = path.nearest_progress_and_distance_mm(
-                            board_xy, progress_est
-                        )
-                        if progress_est is not None and cross > 35.0:
-                            progress, cross = path.nearest_progress_and_distance_mm(
-                                board_xy)
-                    progress_est = progress
-
                     dt_s = (frame.timestamp_s - prev_timestamp_s
                             if prev_timestamp_s is not None else 0.0)
                     prev_timestamp_s = frame.timestamp_s
+                    speed_now = float(np.linalg.norm(state.velocity_mm_s))
+                    association = associate_progress_guarded(
+                        path,
+                        board_xy,
+                        progress_est,
+                        wall_map,
+                        speed_now,
+                        dt_s,
+                        association_high_cross_frames,
+                        max_progress_jump_mm=association_max_progress_jump_mm,
+                        global_reacquire_cross_mm=association_global_reacquire_cross_mm,
+                        global_reacquire_frames=association_global_reacquire_frames,
+                    )
+                    progress = association.progress_mm
+                    cross = association.cross_track_mm
+                    association_high_cross_frames = association.high_cross_frames
+                    progress_delta = association.progress_delta_mm
+                    association_mode = association.mode
+                    progress_est = progress
 
                     # The route speed PLAN, computed once at startup: hole
                     # passes, walls, corners and braking feasibility are all
                     # already folded into one smooth profile. The controller
                     # just tracks the planned speed at this progress.
                     hole_brake = ""
-                    speed_now = float(np.linalg.norm(state.velocity_mm_s))
                     target_speed = profile.speed_at(progress)
                     profile_scale = min(1.0, target_speed / max(v_max, 1e-6))
                     if profile_scale < 0.8:
                         hole_brake = "slow"
+                    hole_clearance = hole_map.clearance_mm(state.position_mm)
                     wall_distance = (wall_map.wall_distance_mm(board_xy)
                                      if wall_map is not None else float("inf"))
                     if speed_now >= 2.0 * recovery_stall_speed_mm_s:
@@ -499,9 +776,13 @@ def main() -> None:
                     wall_scale = (wall_map.speed_scale(board_xy)
                                   if wall_map is not None else 1.0)
                     speed_scale = min(wall_scale, profile_scale)
+                    recovery_reason = ""
+                    recovery_active = False
+                    recovery_plan_ms = 0.0
+                    recovery_target_distance = None
+                    recovery_cache_age_ms = None
 
                     if mode == "velocity":
-                        recovery_reason = ""
                         path_point = path.point_at_progress_mm(progress)
                         tangent = path.tangent_at_progress_mm(progress)
                         turn_deg = path.heading_change_deg(
@@ -528,27 +809,29 @@ def main() -> None:
                         recovery_goal = path.point_at_progress_mm(
                             progress + max(recovery_goal_lookahead_mm,
                                            carrot_lookahead_mm))
-                        recovery_reason = ""
-                        if recovery_planner is not None:
-                            if float(cross) >= recovery_cross_track_mm:
-                                recovery_reason = "offroute"
-                            elif wall_map is not None and wall_map.line_blocked(
-                                    state.position_mm, recovery_goal):
-                                recovery_reason = "wall"
-                            elif (wall_distance <= recovery_wall_distance_mm
-                                  and speed_now < recovery_stall_speed_mm_s):
-                                recovery_reason = "wall"
-                            elif recovery_low_speed_s >= recovery_stall_duration_s:
-                                recovery_reason = "stall"
-
-                            if recovery_reason:
-                                recovery_path = recovery_planner.plan(
-                                    state.position_mm, recovery_goal)
-                                if recovery_path is not None and len(recovery_path) >= 2:
-                                    target = progress_limited_point_along_polyline(
-                                        recovery_path, path, progress,
-                                        recovery_follow_mm,
-                                        recovery_max_backtrack_mm)
+                        if recovery_runtime is not None:
+                            recovery_reason = recovery_reason_for_state(
+                                float(cross), wall_distance, speed_now,
+                                recovery_low_speed_s,
+                                recovery_goal, state.position_mm, wall_map,
+                                cross_track_trigger_mm=recovery_cross_track_mm,
+                                wall_distance_trigger_mm=recovery_wall_distance_mm,
+                                stall_speed_mm_s=recovery_stall_speed_mm_s,
+                                stall_duration_s=recovery_stall_duration_s,
+                            )
+                            recovery_result = recovery_runtime.target_for(
+                                frame.timestamp_s,
+                                state.position_mm,
+                                progress,
+                                recovery_goal,
+                                recovery_reason,
+                            )
+                            recovery_active = recovery_result.active
+                            recovery_plan_ms = recovery_result.plan_ms
+                            recovery_target_distance = recovery_result.target_distance_mm
+                            recovery_cache_age_ms = recovery_result.cache_age_ms
+                            if recovery_result.target_mm is not None:
+                                target = recovery_result.target_mm
                         board_cmd, v_des = carrot_follower.command(
                             state.position_mm, state.velocity_mm_s,
                             target, 0.0, dt_s,
@@ -569,27 +852,29 @@ def main() -> None:
                         recovery_goal = path.point_at_progress_mm(
                             progress + max(recovery_goal_lookahead_mm,
                                            lookahead_mm))
-                        recovery_reason = ""
-                        if recovery_planner is not None:
-                            if float(cross) >= recovery_cross_track_mm:
-                                recovery_reason = "offroute"
-                            elif wall_map is not None and wall_map.line_blocked(
-                                    state.position_mm, recovery_goal):
-                                recovery_reason = "wall"
-                            elif (wall_distance <= recovery_wall_distance_mm
-                                  and speed_now < recovery_stall_speed_mm_s):
-                                recovery_reason = "wall"
-                            elif recovery_low_speed_s >= recovery_stall_duration_s:
-                                recovery_reason = "stall"
-
-                            if recovery_reason:
-                                recovery_path = recovery_planner.plan(
-                                    state.position_mm, recovery_goal)
-                                if recovery_path is not None and len(recovery_path) >= 2:
-                                    target = progress_limited_point_along_polyline(
-                                        recovery_path, path, progress,
-                                        recovery_follow_mm,
-                                        recovery_max_backtrack_mm)
+                        if recovery_runtime is not None:
+                            recovery_reason = recovery_reason_for_state(
+                                float(cross), wall_distance, speed_now,
+                                recovery_low_speed_s,
+                                recovery_goal, state.position_mm, wall_map,
+                                cross_track_trigger_mm=recovery_cross_track_mm,
+                                wall_distance_trigger_mm=recovery_wall_distance_mm,
+                                stall_speed_mm_s=recovery_stall_speed_mm_s,
+                                stall_duration_s=recovery_stall_duration_s,
+                            )
+                            recovery_result = recovery_runtime.target_for(
+                                frame.timestamp_s,
+                                state.position_mm,
+                                progress,
+                                recovery_goal,
+                                recovery_reason,
+                            )
+                            recovery_active = recovery_result.active
+                            recovery_plan_ms = recovery_result.plan_ms
+                            recovery_target_distance = recovery_result.target_distance_mm
+                            recovery_cache_age_ms = recovery_result.cache_age_ms
+                            if recovery_result.target_mm is not None:
+                                target = recovery_result.target_mm
                         carrot_x = ""
                         carrot_y = ""
                         board_cmd = follower.command(state.position_mm,
@@ -614,14 +899,19 @@ def main() -> None:
                     # opposite to the velocity, bypassing the slew limiter
                     # (an emergency cannot wait for a ramp).
                     emergency = False
-                    if (hole_emergency and speed_now > 15.0
-                            and should_emergency_brake(
-                                hole_map, state.position_mm,
-                                state.velocity_mm_s, hole_brake_accel,
-                                path_tangent=path.tangent_at_progress_mm(progress),
-                                cross_track_mm=float(cross),
-                                offroute_mm=hole_emergency_offroute_mm,
-                                align_deg=hole_emergency_align_deg)):
+                    if hole_emergency and should_apply_hole_emergency(
+                        hole_map,
+                        state.position_mm,
+                        state.velocity_mm_s,
+                        hole_brake_accel,
+                        path_tangent=path.tangent_at_progress_mm(progress),
+                        cross_track_mm=float(cross),
+                        offroute_mm=hole_emergency_offroute_mm,
+                        align_deg=hole_emergency_align_deg,
+                        clearance_mm=hole_clearance,
+                        clearance_trigger_mm=hole_emergency_clearance_mm,
+                        clearance_speed_mm_s=hole_emergency_clearance_speed_mm_s,
+                    ):
                         emergency = True
                         hole_brake = "emergency"
                         board_cmd = ((-brake_max_command / speed_now)
@@ -649,7 +939,8 @@ def main() -> None:
                     if float(np.linalg.norm(wall_escape)) > 1e-9:
                         status += "  wall escape"
                     if recovery_reason:
-                        status += f"  A* recovery:{recovery_reason}"
+                        recovery_state = "active" if recovery_active else "rejected"
+                        status += f"  A* recovery:{recovery_reason}/{recovery_state}"
 
                     if link is not None:
                         link.send(ServoCommand(yaw=float(servo_cmd[0]),
@@ -660,6 +951,9 @@ def main() -> None:
                         "vx_mm_s": state.velocity_mm_s[0], "vy_mm_s": state.velocity_mm_s[1],
                         "target_x_mm": target[0], "target_y_mm": target[1],
                         "progress_mm": progress,
+                        "loop_dt_ms": 1000.0 * dt_s,
+                        "association_mode": association_mode,
+                        "progress_delta_mm": progress_delta,
                         "carrot_x_mm": carrot_x, "carrot_y_mm": carrot_y,
                         "desired_vx_mm_s": v_des[0], "desired_vy_mm_s": v_des[1],
                         "cross_track_mm": cross, "turn_deg": turn_deg,
@@ -667,6 +961,18 @@ def main() -> None:
                         "hole_brake": hole_brake,
                         "wall_distance_mm": wall_distance,
                         "target_speed_mm_s": target_speed,
+                        "hole_clearance_mm": hole_clearance,
+                        "recovery_reason": recovery_reason,
+                        "recovery_active": recovery_active,
+                        "recovery_plan_ms": recovery_plan_ms,
+                        "recovery_target_distance_mm": (
+                            "" if recovery_target_distance is None
+                            else recovery_target_distance
+                        ),
+                        "recovery_cache_age_ms": (
+                            "" if recovery_cache_age_ms is None
+                            else recovery_cache_age_ms
+                        ),
                         "wall_escape_x": wall_escape[0], "wall_escape_y": wall_escape[1],
                         "board_cmd_x": board_cmd[0], "board_cmd_y": board_cmd[1],
                         "yaw_command": servo_cmd[0], "pitch_command": servo_cmd[1],
@@ -685,6 +991,9 @@ def main() -> None:
                     prev_timestamp_s = None
                     prev_servo_cmd = np.zeros(2)
                     recovery_low_speed_s = 0.0
+                    association_high_cross_frames = 0
+                    if recovery_runtime is not None:
+                        recovery_runtime.reset()
                     estimator.reset()
                     follower.reset()
                     velocity_follower.reset()
@@ -693,14 +1002,22 @@ def main() -> None:
                         "timestamp_s": frame.timestamp_s, "found": False,
                         "x_mm": "", "y_mm": "", "vx_mm_s": "", "vy_mm_s": "",
                         "target_x_mm": "", "target_y_mm": "", "progress_mm": "",
+                        "loop_dt_ms": "", "association_mode": "",
+                        "progress_delta_mm": "",
                         "carrot_x_mm": "", "carrot_y_mm": "",
                         "desired_vx_mm_s": "", "desired_vy_mm_s": "",
                         "cross_track_mm": "", "turn_deg": "",
                         "wall_speed_scale": "",
                         "hole_brake": "",
                         "wall_distance_mm": "",
+                        "target_speed_mm_s": "",
                         "hole_hazard_distance_mm": "",
                         "hole_speed_cap_mm_s": "",
+                        "hole_clearance_mm": "",
+                        "recovery_reason": "", "recovery_active": "",
+                        "recovery_plan_ms": "",
+                        "recovery_target_distance_mm": "",
+                        "recovery_cache_age_ms": "",
                         "wall_escape_x": "", "wall_escape_y": "",
                         "board_cmd_x": "", "board_cmd_y": "",
                         "yaw_command": 0.0, "pitch_command": 0.0,

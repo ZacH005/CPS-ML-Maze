@@ -4,6 +4,7 @@ from cps_maze.planning.hazards import HoleMap
 from cps_maze.planning.recovery_astar import (
     RecoveryAStarConfig,
     RecoveryAStarPlanner,
+    bounded_recovery_point_along_polyline,
     point_along_polyline,
     progress_limited_point_along_polyline,
 )
@@ -75,3 +76,69 @@ def test_progress_limited_recovery_target_skips_backtracking_waypoint():
 
     assert progress >= 46.0
     assert target[0] > 45.0
+
+
+def test_bounded_recovery_rejects_far_corridor_jump():
+    nominal = WaypointPath(points_mm=np.array([
+        [72.9, 52.0],
+        [74.4, 29.5],
+        [69.9, 22.5],
+        [35.4, 24.0],
+        [24.4, 74.5],
+        [50.4, 76.5],
+    ]))
+    ball = np.array([47.6, 22.4])
+    recovery = np.array([
+        ball,
+        [82.1, 84.0],
+    ])
+
+    target = bounded_recovery_point_along_polyline(
+        recovery,
+        nominal,
+        ball,
+        current_progress_mm=80.0,
+        distance_mm=20.0,
+        max_backtrack_mm=4.0,
+        max_forward_mm=45.0,
+        max_target_distance_mm=28.0,
+    )
+
+    assert target is None
+
+
+def test_bounded_recovery_rejects_when_all_candidates_are_too_far():
+    nominal = WaypointPath(points_mm=np.array([[0.0, 0.0], [100.0, 0.0]]))
+    ball = np.array([10.0, 0.0])
+    recovery = np.array([[10.0, 0.0], [80.0, 0.0]])
+
+    target = bounded_recovery_point_along_polyline(
+        recovery,
+        nominal,
+        ball,
+        current_progress_mm=10.0,
+        distance_mm=35.0,
+        max_target_distance_mm=20.0,
+    )
+
+    assert target is None
+
+
+def test_bounded_recovery_accepts_nearby_sideways_target():
+    nominal = WaypointPath(points_mm=np.array([[0.0, 0.0], [100.0, 0.0]]))
+    ball = np.array([50.0, 4.0])
+    recovery = np.array([[50.0, 4.0], [58.0, 9.0], [70.0, 0.0]])
+
+    target = bounded_recovery_point_along_polyline(
+        recovery,
+        nominal,
+        ball,
+        current_progress_mm=50.0,
+        distance_mm=9.0,
+        max_backtrack_mm=4.0,
+        max_forward_mm=45.0,
+        max_target_distance_mm=28.0,
+    )
+
+    assert target is not None
+    assert float(np.linalg.norm(target - ball)) <= 28.0

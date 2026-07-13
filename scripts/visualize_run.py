@@ -267,6 +267,10 @@ class RunVisualizer:
         turn_deg = f(row, "turn_deg")
         cross = f(row, "cross_track_mm")
         hole_brake = row.get("hole_brake", "")
+        association_mode = row.get("association_mode", "")
+        recovery_reason = row.get("recovery_reason", "")
+        recovery_active = str(row.get("recovery_active", "")).lower() in ("true", "1")
+        hole_clearance = row.get("hole_clearance_mm", "")
 
         # Recent trail.
         trail_points = []
@@ -333,11 +337,16 @@ class RunVisualizer:
             reasons.append("STALLED: command present but speed < 8mm/s")
         if float(np.linalg.norm(wall_escape)) > 1e-9:
             reasons.append(f"wall escape command {np.linalg.norm(wall_escape):.2f}")
+        if recovery_reason:
+            state = "active" if recovery_active else "rejected"
+            reasons.append(f"A* recovery {state}: {recovery_reason}")
+        if association_mode and association_mode not in ("local", "init"):
+            reasons.append(f"association={association_mode}")
         if not reasons:
             reasons.append("no active slowdown/brake flag")
 
         panel = img.copy()
-        cv2.rectangle(panel, (8, 8), (560, 176 + 22 * len(reasons)), (0, 0, 0), -1)
+        cv2.rectangle(panel, (8, 8), (600, 198 + 22 * len(reasons)), (0, 0, 0), -1)
         cv2.addWeighted(panel, 0.58, img, 0.42, 0.0, img)
         put_text(img, title or f"run frame {idx}", (18, 32), (255, 255, 255), 0.68)
         put_text(img, f"t={rel_t:.1f}s  progress={progress:.0f}/{self.total_mm:.0f}mm"
@@ -348,10 +357,15 @@ class RunVisualizer:
         put_text(img, f"wall_dist={wall_d:.1f}mm  wall_scale={wall_scale:.2f}"
                  f"  turn={turn_deg:.0f}deg  hazard_d={hazard_d if hazard_d is not None else 'none'}",
                  (18, 112), (255, 255, 255), 0.55)
-        put_text(img, "why:", (18, 144), (0, 255, 255), 0.55)
+        if hole_clearance not in ("", None):
+            put_text(img, f"hole_clearance={f(row, 'hole_clearance_mm'):.1f}mm"
+                     f"  assoc={association_mode or 'old-log'}"
+                     f"  recovery_plan={f(row, 'recovery_plan_ms'):.1f}ms",
+                     (18, 138), (255, 255, 255), 0.55)
+        put_text(img, "why:", (18, 166), (0, 255, 255), 0.55)
         for i, reason in enumerate(reasons):
             color = (0, 0, 255) if "STALLED" in reason or "emergency" in reason else (0, 255, 255)
-            put_text(img, f"- {reason}", (34, 170 + 22 * i), color, 0.52)
+            put_text(img, f"- {reason}", (34, 192 + 22 * i), color, 0.52)
 
         legend_y = img.shape[0] - 78
         cv2.rectangle(img, (8, legend_y - 20), (720, img.shape[0] - 8), (0, 0, 0), -1)
