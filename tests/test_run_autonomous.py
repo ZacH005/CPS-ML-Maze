@@ -6,7 +6,75 @@ from scripts.run_autonomous import (
     RUN_LOG_FIELDS,
     choose_carrot_point,
     slew_limit_command,
+    unstick_bias_command,
+    unstick_is_stuck,
 )
+
+
+def test_unstick_bias_is_not_full_open_loop_push():
+    # A pure open-loop push would be exactly magnitude*direction regardless of
+    # velocity. With the ball already moving toward the target, the damping term
+    # must REDUCE the forward push (so it can't keep accelerating the ball).
+    to_target = np.array([10.0, 0.0])
+    still = unstick_bias_command(0.6, to_target, np.array([0.0, 0.0]),
+                                 damping=0.02, cap=1.0)
+    moving = unstick_bias_command(0.6, to_target, np.array([20.0, 0.0]),
+                                  damping=0.02, cap=1.0)
+    assert np.isclose(still[0], 0.6)              # from rest: full push
+    assert moving[0] < still[0]                    # moving: damped, less push
+    # and at high speed in the push direction it reverses to a brake
+    fast = unstick_bias_command(0.6, to_target, np.array([60.0, 0.0]),
+                                damping=0.02, cap=1.0)
+    assert fast[0] < 0.0
+
+
+def test_unstick_bias_is_magnitude_capped():
+    to_target = np.array([10.0, 0.0])
+    bias = unstick_bias_command(0.6, to_target, np.array([0.0, 100.0]),
+                                damping=0.02, cap=0.55)
+    assert np.linalg.norm(bias) <= 0.55 + 1e-9
+
+
+def test_unstick_bias_zero_when_no_direction_or_magnitude():
+    z = unstick_bias_command(0.6, np.array([0.0, 0.0]), np.array([1.0, 1.0]),
+                             damping=0.02, cap=1.0)
+    assert np.allclose(z, [0.0, 0.0])
+    z2 = unstick_bias_command(0.0, np.array([10.0, 0.0]), np.array([0.0, 0.0]),
+                              damping=0.02, cap=1.0)
+    assert np.allclose(z2, [0.0, 0.0])
+
+
+def test_unstick_not_triggered_by_slow_but_steady_progress():
+    # Near a hole the plan is slow (12 mm/s), so expected travel is ~12 mm and
+    # the progress threshold is 0.35*12 = 4.2 mm. A ball making steady net
+    # progress of 5 mm/window is progressing, NOT stuck - the old fixed 6 mm
+    # threshold wrongly flagged this and launched the ball into the hole.
+    assert not unstick_is_stuck(net_disp_mm=5.0, span_s=1.0, window_s=1.0,
+                                target_speed_mm_s=12.0, dist_mm=6.0,
+                                progress_frac=0.35)
+    # A ball that barely moved (2 mm) at the same plan IS stuck.
+    assert unstick_is_stuck(net_disp_mm=2.0, span_s=1.0, window_s=1.0,
+                            target_speed_mm_s=12.0, dist_mm=6.0,
+                            progress_frac=0.35)
+
+
+def test_unstick_requires_filled_window_and_moving_plan():
+    # window not yet filled -> not stuck
+    assert not unstick_is_stuck(0.0, span_s=0.3, window_s=1.0,
+                                target_speed_mm_s=12.0, dist_mm=6.0,
+                                progress_frac=0.35)
+    # plan wants ~no motion -> unstick must not fire
+    assert not unstick_is_stuck(0.0, span_s=1.0, window_s=1.0,
+                                target_speed_mm_s=1.0, dist_mm=6.0,
+                                progress_frac=0.35)
+
+
+def test_unstick_threshold_capped_by_dist_mm_in_fast_zones():
+    # In a fast zone (25 mm/s) the progress threshold (0.35*25 = 8.75 mm) is
+    # capped at dist_mm=6, so a ball that moved 7 mm is NOT stuck.
+    assert not unstick_is_stuck(net_disp_mm=7.0, span_s=1.0, window_s=1.0,
+                                target_speed_mm_s=25.0, dist_mm=6.0,
+                                progress_frac=0.35)
 
 
 def test_slew_limits_increasing_drive_to_slow_rate():

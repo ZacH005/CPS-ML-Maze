@@ -116,9 +116,9 @@ control:
   # At 0.04 the driving tilt reaches ~0.6 when stalled, so the actual control
   # drives the ball (and brakes harder when overspeeding). Raise toward 0.06 if
   # driving still can't move it; lower if it oscillates once rolling.
-  k_vel: 0.04
-  carrot_lookahead_mm: 20
-  carrot_min_lookahead_mm: 4.0
+  k_vel: 0.06
+  carrot_lookahead_mm: 30
+  carrot_min_lookahead_mm: 8.0
   lookahead_mm: 18.0
   kp: 0.015
   kd: 0.006
@@ -131,7 +131,7 @@ control:
   # target, the command is scaled up to at least this magnitude - but only
   # once low speed has PERSISTED (a single slow frame also happens during
   # ordinary braking into a corner, which is not stiction).
-  stall_kick: 0.45
+  stall_kick: 0.2
   # MUST stay below the speed profile's minimum (the runner clamps it if
   # not): planned slow rolling through a hole pass must never be mistaken
   # for a stall, or the kick launches the ball exactly where the plan wants
@@ -149,12 +149,12 @@ control:
   # toggle it on/off (the on/off toggling was visible as board jitter with
   # the ball sitting balanced).
   stall_kick_ramp_per_s: 0.25
-  # Cap on the ramped kick, mostly to stop the ramp running away to absurd
-  # values on a long stall. Set to full command authority (1.0) because this
-  # ball needs up to full tilt to break free at the stubborn spots - a lower
-  # cap (0.7) left it stuck there. The firmware clamps to 1.0 anyway, so this
-  # does not reduce the tilt that actually reaches the servos.
-  stall_kick_max: 1.0
+  # Cap on the ramped kick. Restored to the safer 0.7 (per ef32c40): with the
+  # displacement-based unstick now freeing genuinely stuck spots via a DAMPED
+  # bias, the velocity kick no longer needs near-full authority - and that high
+  # authority was part of what launched the ball into holes. Raise later only if
+  # a spot truly needs more, once the launch/fall behavior is gone.
+  stall_kick_max: 1
   # --- Displacement-based unstick (corner escape) ---
   # The velocity-based stall kick cannot free the ball from a tight corner: the
   # ball twitches to ~10 mm/s in place, which resets the kick before it ramps,
@@ -167,10 +167,24 @@ control:
   unstick_dist_mm: 6.0     # moved less than this over the window = stuck
   unstick_base: 0.5        # initial push once stuck
   unstick_ramp_per_s: 0.6  # escalate the push per second still stuck ...
-  unstick_max: 1.0         # ... up to this (full tilt for the worst corners)
+  # Cap the unstick push. Conservative on purpose: unstick is ADDED to the
+  # (still-active) follower command as a damped bias, not an open-loop
+  # overwrite, so it no longer needs full authority to break stiction and full
+  # authority is what launched the ball into holes. Raise later if a stubborn
+  # spot truly needs more, once the launch/fall behavior is gone.
+  unstick_max: 1      # ... up to this
+  # Velocity damping in the unstick bias: the push shrinks (and reverses to a
+  # brake) as the ball accelerates in the push direction, so it cannot keep
+  # accelerating the ball once it starts moving.
+  unstick_kd: 0.02
+  # "Stuck" is judged against the PLANNED travel (target_speed * window): the
+  # ball is stuck only if it moved less than this fraction of what the plan
+  # wanted. Stops a slow-but-progressing ball near a hole from triggering a
+  # launch. (unstick_dist_mm remains an absolute upper bound on the threshold.)
+  unstick_progress_frac: 0.35
   # Max |servo command| change per second sent to hardware; smooths sudden
   # jumps (stiction kicks, re-association) so corners aren't punched through.
-  command_slew_per_s: 4
+  command_slew_per_s: 15
   max_command: 1
   # --- Braking authority ---
   # max_command is a gentleness cap for DRIVING. Stopping a fast ball needs
@@ -241,18 +255,18 @@ control:
   # Committed speed THROUGH a hole pass. Deliberately not a crawl: slow
   # rolling near a hole maximizes exposure and stiction cycling; a moderate
   # committed speed crosses quickly and stably.
-  hole_pass_mm_s: 12.0
-  hole_slow_band_mm: 35.0   # ramp from cruise down to pass speed over this
+  hole_pass_mm_s: 15.0
+  hole_slow_band_mm: 15.0   # ramp from cruise down to pass speed over this
   # Latest pseudostuck run stalled in the 193-201mm corridor with target speed
   # around 12mm/s and no local hole danger. Keep safe corridors rolling above
   # the observed stiction-dominated crawl regime.
-  profile_floor_mm_s: 12.0  # the plan never asks for slower than this
+  profile_floor_mm_s: 15.0  # the plan never asks for slower than this
   end_speed_mm_s: 10.0      # arrive gently at the goal
-  hole_margin_mm: 6.0       # extra capture clearance around each hole
+  hole_margin_mm: 2.0       # extra capture clearance around each hole
   ball_radius_mm: 4.0
   # Achievable deceleration from board tilt; used for the profile's braking
   # and acceleration passes and the emergency stopping-distance check.
-  hole_brake_accel_mm_s2: 250
+  hole_brake_accel_mm_s2: 150
   # Reactive: full brake opposite the velocity (bypassing the slew limiter)
   # when the trajectory enters a hole and stopping distance exceeds the
   # distance to it.

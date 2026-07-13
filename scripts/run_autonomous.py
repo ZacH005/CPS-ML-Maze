@@ -99,6 +99,59 @@ def slew_limit_command(
     return out
 
 
+def unstick_is_stuck(
+    net_disp_mm: float,
+    span_s: float,
+    window_s: float,
+    target_speed_mm_s: float,
+    dist_mm: float,
+    progress_frac: float,
+) -> bool:
+    """True if the ball has genuinely failed to make progress over the window.
+
+    Stuck is judged against how far the PLAN wanted the ball to travel
+    (target_speed * window), not a fixed distance. A fixed 6 mm / 1 s threshold
+    falsely fired on a ball rolling slowly-but-steadily past a hole (where the
+    planned speed is intentionally low) and then launched it into the hole. The
+    absolute dist_mm is kept only as an UPPER bound so a fast zone does not
+    trigger unstick too eagerly.
+    """
+    if target_speed_mm_s <= 2.0 or window_s <= 0.0:
+        return False
+    if span_s < 0.8 * window_s:  # window not filled yet
+        return False
+    threshold = min(dist_mm, progress_frac * target_speed_mm_s * window_s)
+    return net_disp_mm < threshold
+
+
+def unstick_bias_command(
+    magnitude: float,
+    to_target_mm: np.ndarray,
+    velocity_mm_s: np.ndarray,
+    damping: float,
+    cap: float,
+) -> np.ndarray:
+    """A bounded, velocity-damped push toward the target, to be ADDED to the
+    follower command - never to replace it.
+
+    Adding it (instead of overwriting) preserves the follower's velocity
+    feedback, and the explicit ``-damping * velocity`` term makes the push shrink
+    (and reverse to a brake) as the ball accelerates in the push direction. So
+    unstick can break stiction from rest without launching the ball open-loop
+    the way ``board_cmd = magnitude * direction`` did. The magnitude is capped.
+    """
+    to_target_mm = np.asarray(to_target_mm, dtype=float)
+    n = float(np.linalg.norm(to_target_mm))
+    if n < 1e-6 or magnitude <= 0.0:
+        return np.zeros(2)
+    bias = (magnitude * (to_target_mm / n)
+            - damping * np.asarray(velocity_mm_s, dtype=float))
+    m = float(np.linalg.norm(bias))
+    if cap > 0.0 and m > cap:
+        bias = bias * (cap / m)
+    return bias
+
+
 def load_holes(path: Path) -> np.ndarray:
     """Returns (N, 3) array of x_mm, y_mm, radius_mm; empty if file missing."""
     if not path.exists():
@@ -363,7 +416,15 @@ def main() -> None:
     unstick_dist_mm = float(config.control.get("unstick_dist_mm", 6.0))
     unstick_base = float(config.control.get("unstick_base", 0.5))
     unstick_ramp_per_s = float(config.control.get("unstick_ramp_per_s", 0.6))
-    unstick_max = float(config.control.get("unstick_max", 1.0))
+    unstick_max = float(config.control.get("unstick_max", 0.65))
+    # Unstick is a DAMPED BIAS added to the follower command, not an open-loop
+    # overwrite: this velocity-damping term keeps it from launching the ball,
+    # and the progress fraction judges "stuck" against the planned travel so a
+    # slow-but-progressing ball near a hole is not mistaken for stuck.
+    unstick_kd = float(config.control.get("unstick_kd", 0.02))
+    unstick_progress_frac = float(config.control.get("unstick_progress_frac", 0.35))
+    # Reuse the hole slow-band as the "near a hole -> cap unstick gently" radius.
+    unstick_hole_band_mm = float(config.control.get("hole_slow_band_mm", 20.0))
     # The runtime wall speed-scale is OFF-route protection only; the speed
     # PROFILE already folds planned wall clearance into the on-route target.
     # Applying the runtime scale on-route double-counts it, and a dense mask
@@ -817,12 +878,14 @@ def main() -> None:
                                 hole_brake = "stabilize"
 
                     # Displacement-based UNSTICK: at a tight corner the ball
-                    # twitches to ~10 mm/s in place, which the velocity-based
-                    # stall kick reads as "moving" and keeps resetting, so the
-                    # kick never ramps and the ball jitters forever. Velocity
-                    # cannot tell twitching-in-place from slow rolling, so detect
-                    # stuck by ACTUAL net displacement over a window and ramp a
-                    # sustained push toward the carrot until the ball truly moves.
+                    # twitches in place, which the velocity-based stall kick
+                    # reads as "moving" and keeps resetting, so it never frees
+                    # the ball. Detect stuck by net displacement vs PLANNED
+                    # travel (not a fixed distance, which mis-fired on a slow
+                    # hole pass), then ADD a damped, capped bias toward the
+                    # carrot - never an open-loop overwrite - so the follower's
+                    # velocity feedback stays active and the push cannot launch
+                    # the ball. Suppressed/capped near holes and in slow zones.
                     unstick_now = 0.0
                     if unstick_enabled and not emergency and not stabilize_active:
                         pos_history.append((frame.timestamp_s,
@@ -834,18 +897,31 @@ def main() -> None:
                         span = frame.timestamp_s - pos_history[0][0]
                         net_disp = float(np.linalg.norm(
                             state.position_mm - pos_history[0][1]))
-                        if (span >= 0.8 * unstick_window_s
-                                and net_disp < unstick_dist_mm
-                                and target_speed > 2.0):
+                        clearance = (hole_map.clearance_mm(state.position_mm)
+                                     if hole_map is not None else float("inf"))
+                        stuck = unstick_is_stuck(
+                            net_disp, span, unstick_window_s, target_speed,
+                            unstick_dist_mm, unstick_progress_frac)
+                        # Suppress entirely inside a hole's capture zone - pushing
+                        # a ball that is already in the danger zone risks the fall.
+                        if stuck and clearance > 0.0:
                             unstick_time += max(dt_s, 0.0)
                             unstick_now = min(
                                 unstick_base + unstick_ramp_per_s * unstick_time,
                                 unstick_max)
-                            to_target = target - state.position_mm
-                            n = float(np.linalg.norm(to_target))
-                            if n > 1e-6:
-                                board_cmd = unstick_now * (to_target / n)
-                                hole_brake = "unstick"
+                            # Cap the push hard in slow zones and near holes so a
+                            # breakaway there stays gentle, never a launch.
+                            u_cap = unstick_max
+                            if (profile_scale < 0.75
+                                    or clearance < unstick_hole_band_mm):
+                                u_cap = min(u_cap, slowzone_max_command)
+                            # ADD a damped bias to the follower command (keeps the
+                            # follower's velocity feedback/braking active), never
+                            # an open-loop overwrite.
+                            board_cmd = board_cmd + unstick_bias_command(
+                                unstick_now, target - state.position_mm,
+                                state.velocity_mm_s, unstick_kd, u_cap)
+                            hole_brake = "unstick"
                         else:
                             unstick_time = 0.0
                     else:
