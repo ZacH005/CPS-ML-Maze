@@ -20,8 +20,6 @@ The repository contains the software, firmware, configuration, calibration workf
 
 A wooden labyrinth maze is a compact cyber-physical systems problem: perception, calibration, planning, control, real-time hardware actuation, and mechanical safety all interact. CPS-LabyrinTUM demonstrates that a reliable autonomous solver can be built without a large reinforcement-learning setup by combining calibrated computer vision, classical control, careful servo limits, and iterative hardware testing.
 
-The system is not a direct CyberRunner clone. It uses different actuators, a different maze layout, and a simpler no-RL target adapted to this project's hardware.
-
 ---
 
 ## Features
