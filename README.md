@@ -141,7 +141,7 @@ python scripts/visualize_run.py
 
 ## Presentation Links
 
-- [Project Final Presentation](docs/presentation/CPS Presentation Labyrintum.pdf)
+- [Project Final Presentation](docs/presentation/CPS_Presentation_LabyrinTUM.pdf)
 - [Project Final Report](docs/paper/LabyrinTUM_Final_Report.pdf)
 - [LabyrinTUM Demo Video](https://drive.google.com/file/d/1zp8P_jUAHLlkE9JoUDaiNjJQ3Ebe_dcg/view?usp=sharing)
 
