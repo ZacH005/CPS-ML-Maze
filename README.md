@@ -1,20 +1,22 @@
 # CPS-ML Maze
 
-Autonomous marble maze project using a camera, a two-axis servo-actuated wooden labyrinth board, and a classical vision/control software stack.
+Autonomous marble maze project using a camera, a two-axis servo-actuated wooden labyrinth board, and a classical vision/control software stack. The system successfully completed the full physical maze for the final project demo/report.
 
 The target system is not a direct CyberRunner clone. It uses the same high-level idea of camera-based state estimation and motorized board control, but the implementation is adapted for this project's hardware: a USB global-shutter camera, Arduino UNO R4 Minima, PCA9685 PWM servo driver, and hobby servos.
 
-## Goal
+## Goal and Outcome
 
-Solve the full physical maze without user input after manual ball placement/reset.
+The goal was to solve the full physical maze without user input after manual ball placement/reset.
 
-The first working target is a reliable classical-control solver:
+This milestone has been achieved: the autonomous stack completed the maze using camera-based ball tracking, calibrated board coordinates, path following, classical control, and Arduino/PCA9685-driven servo actuation.
+
+The working control loop is:
 
 ```text
 camera -> ball tracking -> maze coordinates -> path planner -> controller -> Arduino -> servos
 ```
 
-Reinforcement learning is intentionally not required for the initial demo.
+Reinforcement learning was intentionally not required; the final solver uses the classical-control approach developed in this repository.
 
 ## Repository Map
 
@@ -109,14 +111,15 @@ python scripts/calibrate_charuco_homography.py \
 
 ## Current Project Status
 
-The project is at scaffold stage. Before autonomous runs, the team must:
+The maze completion milestone is done. The repository now contains the working software stack used to drive the physical maze through the final route:
 
-1. Verify servo PWM direction and safe travel limits.
-2. Mount servos and camera rigidly.
-3. Calibrate camera intrinsics and board homography.
-4. Annotate the maze path and holes.
-5. Tune the first segment controller.
+1. Camera capture and bright-blob ball tracking.
+2. Image-to-board coordinate calibration through homography.
+3. Annotated maze path following with speed profiling and recovery behavior.
+4. PID/classical control for yaw and pitch board commands.
+5. Arduino serial command bridge and PCA9685 servo output.
+6. Run logging and visualization tools for tuning and post-run analysis.
 
-See [TODO.md](TODO.md) and [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md).
+The remaining documentation and logs preserve the development history, hardware notes, calibration assumptions, and tuning workflow used to reach the successful run. See [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [logs/agent/](logs/agent/).
 
 The initial scaffold validation is documented in [docs/SCAFFOLD_VALIDATION.md](docs/SCAFFOLD_VALIDATION.md).
